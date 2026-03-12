@@ -1,6 +1,6 @@
 ##### Optional override for WrenVPS instance #####
 # Usage: docker compose -f docker-compose.yml -f docker-compose.wrenvps.yml up -d
-# Ensure ~/.wrenvps/config.json exists and sets tools.web.search.searxngUrl to http://localhost:8081 (or your chosen backend)
+# Ensure ~/.wrenvps/config.json exists and sets tools.web.search.searxngUrl to http://localhost:8082 (or your chosen backend)
 
 services:
   nanobot-gateway:
@@ -17,4 +17,4 @@ services:
     env_file:
       - .env.wrenvps
     ports:
-      - "8081:8080"
+      - "8082:8080"

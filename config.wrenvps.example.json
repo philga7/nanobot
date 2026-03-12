@@ -30,7 +30,7 @@
     "web": {
       "search": {
         "backend": "searxng",
-        "searxngUrl": "http://localhost:8081",
+        "searxngUrl": "http://localhost:8082",
         "maxResults": 5
       }
     },
