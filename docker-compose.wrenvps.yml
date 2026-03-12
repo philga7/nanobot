@@ -1,6 +1,6 @@
-// Optional override for WrenVPS instance.
-// Usage: docker compose -f docker-compose.yml -f docker-compose.wrenvps.yml up -d
-// Ensure ~/.wrenvps/config.json exists and sets tools.web.search.searxngUrl to http://searxng:8080 (or your chosen backend)
+##### Optional override for WrenVPS instance #####
+# Usage: docker compose -f docker-compose.yml -f docker-compose.wrenvps.yml up -d
+# Ensure ~/.wrenvps/config.json exists and sets tools.web.search.searxngUrl to http://searxng:8080 (or your chosen backend)
 
 services:
   nanobot-gateway:
