@@ -3,6 +3,10 @@
 # Ensure ~/.wrenvps/config.json exists and sets tools.web.search.searxngUrl to http://localhost:8082 (or your chosen backend)
 
 services:
+  bird-api:
+    env_file:
+      - .env.wrenvps
+
   nanobot-gateway:
     env_file:
       - .env.wrenvps

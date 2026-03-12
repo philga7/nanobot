@@ -43,16 +43,6 @@
         },
         "toolTimeout": 30
       },
-      "bird": {
-        "command": "node",
-        "args": ["/app/services/bird-mcp/dist/index.js"],
-        "type": "stdio",
-        "env": {
-          "AUTH_TOKEN": "YOUR_BIRD_AUTH_TOKEN",
-          "CT0": "YOUR_BIRD_CT0_COOKIE"
-        },
-        "toolTimeout": 30
-      },
       "ntfy": {
         "command": "npx",
         "args": ["-y", "ntfy-me-mcp"],

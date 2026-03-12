@@ -1,7 +1,7 @@
 ---
 name: newsroom
-description: Orchestrate a Four-Part AI Newsroom using SearXNG web search, MCP servers (news/library, journaling, todo, bird, ntfy), and NanoBot’s memory for research, triage, and delivery.
-metadata: {"nanobot":{"emoji":"📰","requires":{"skills":["memory","weather","twitter"],"tools":["web_search","web_fetch"],"mcpServers":["library","memento","todo","ntfy","bird","newsPipeline"]}}}
+description: Orchestrate a Four-Part AI Newsroom using SearXNG web search, MCP servers (news/library, journaling, todo, ntfy), and NanoBot’s memory for research, triage, and delivery.
+metadata: {"nanobot":{"emoji":"📰","requires":{"skills":["memory","weather","twitter"],"tools":["web_search","web_fetch"],"mcpServers":["library","memento","todo","ntfy","newsPipeline"]}}}
 ---
 
 # Four-Part AI Newsroom
@@ -29,7 +29,7 @@ Use these tools:
   - Use narrow, explicit queries: `"Georgia breaking news"`, `"CFP live blog"`, `"intel signals [topic]"`.
   - Prefer `count` 5–10 and then refine rather than huge queries.
 - `web_fetch` to **deep read** a specific URL when needed.
-- `mcp_bird_*` tools (bird MCP) to pull **X/Twitter commentary**:
+- `web_fetch` to call **bird-api** (http://bird-api:18791/profile, /timeline, /search) for X/Twitter commentary:
   - Profiles and timelines for known commentators.
   - Use sparingly; focus on “intel-signals” or curated handles from the library, not random trends.
 
@@ -38,7 +38,7 @@ Use these tools:
 When the user asks for a sweep (e.g. “breaking news in the last 30 minutes”):
 
 1. Use `web_search` with time/topic filters you infer from the request.
-2. Optionally cross-check with X/Twitter (bird MCP) for narrative signals.
+2. Optionally cross-check with X/Twitter (bird-api) for narrative signals.
 3. For each candidate story, decide:
    - **Relevance** to the user (country, sector, topics in library config).
    - **Urgency** (breaking/live, confirmation level, time-sensitivity).
@@ -154,7 +154,7 @@ When the user asks for things like:
 You should:
 
 1. **Clarify scope** in your own words (time window, topics, channels).
-2. Use `web_search` + bird MCP + library MCP to **discover and score** stories.
+2. Use `web_search` + bird-api (web_fetch) + library MCP to **discover and score** stories.
 3. Use journaling MCP and/or `search_memory` to **compare with recent history** and explain differences.
 4. Use todo MCP and (optionally) ntfy/Slack tools to **route** stories according to delivery policy.
 5. Summarize the result as an **editorial briefing**, not just a list of links.
