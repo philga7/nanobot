@@ -1,6 +1,104 @@
 {
   "agents": {
     "defaults": {
+      "instanceName": "WrenVPS",
+      "workspace": "~/.wrenvps/workspace",
+      "model": "gemini-3-flash-preview",
+      "provider": "custom",
+      "maxTokens": 16384,
+      "contextWindowTokens": 1000000,
+      "temperature": 0.1,
+      "maxToolIterations": 40
+    }
+  },
+  "providers": {
+    "custom": {
+      "apiKey": "YOUR_CUSTOM_API_KEY",
+      "apiBase": "https://ollama.com/v1"
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "YOUR_TELEGRAM_BOT_TOKEN",
+      "allowFrom": [
+        "YOUR_TELEGRAM_USER_ID"
+      ]
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "backend": "searxng",
+        "searxngUrl": "http://localhost:8080",
+        "maxResults": 5
+      }
+    },
+    "mcpServers": {
+      "todo": {
+        "command": "npx",
+        "args": ["-y", "todo-mcp-server"],
+        "type": "stdio",
+        "env": {
+          "TODO_DB_PATH": "/absolute/path/to/wrenvps/todos.db"
+        },
+        "toolTimeout": 30
+      },
+      "bird": {
+        "command": "node",
+        "args": ["/app/services/bird-mcp/dist/index.js"],
+        "type": "stdio",
+        "env": {
+          "AUTH_TOKEN": "YOUR_BIRD_AUTH_TOKEN",
+          "CT0": "YOUR_BIRD_CT0_COOKIE"
+        },
+        "toolTimeout": 30
+      },
+      "ntfy": {
+        "command": "npx",
+        "args": ["-y", "ntfy-me-mcp"],
+        "type": "stdio",
+        "env": {
+          "NTFY_TOPIC": "wrenvps-notifications",
+          "NTFY_URL": "https://ntfy.example.com",
+          "NTFY_TOKEN": "YOUR_NTFY_TOKEN"
+        },
+        "toolTimeout": 30
+      },
+      "memento": {
+        "command": "npx",
+        "args": ["-y", "@iachilles/memento"],
+        "type": "stdio",
+        "env": {
+          "MEMENTO_DB_PATH": "/absolute/path/to/wrenvps/memento.db"
+        },
+        "toolTimeout": 30
+      },
+      "library": {
+        "command": "python",
+        "args": ["sqlite-paper-fastmcp-server.py"],
+        "type": "stdio",
+        "cwd": "/app/services/library-mcp",
+        "env": {
+          "SQLITE_DB_PATH": "/root/.wrenvps/library/sources.db"
+        },
+        "toolTimeout": 60
+      },
+      "newsPipeline": {
+        "command": "node",
+        "args": ["/app/services/news-pipeline-mcp/dist/index.js"],
+        "type": "stdio",
+        "env": {
+          "NANOBOT_BASE_DIR": "/root/.wrenvps"
+        },
+        "toolTimeout": 60
+      }
+    }
+  }
+}
+{
+  "agents": {
+    "defaults": {
       "instanceName": "WrenAir",
       "workspace": "~/.wrenair/workspace",
       "model": "gemini-3-flash-preview",
