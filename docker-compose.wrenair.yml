@@ -3,6 +3,10 @@
 # Ensure ~/.wrenair/config.json exists and sets tools.web.search.searxngUrl to http://searxng:8080
 
 services:
+  bird-api:
+    env_file:
+      - .env.wrenair
+
   nanobot-gateway:
     env_file:
       - .env.wrenair

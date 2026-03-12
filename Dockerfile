@@ -24,7 +24,6 @@ RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
 COPY nanobot/ nanobot/
 COPY bridge/ bridge/
 COPY services/mcp-ts-sdk/ services/mcp-ts-sdk/
-COPY services/bird-mcp/ services/bird-mcp/
 COPY services/library-mcp/ services/library-mcp/
 COPY services/news-pipeline-mcp/ services/news-pipeline-mcp/
 RUN uv pip install --system --no-cache .
@@ -39,12 +38,7 @@ RUN corepack enable && pnpm install && pnpm --filter @modelcontextprotocol/serve
 WORKDIR /app/bridge
 RUN npm install && npm run build
 
-# X.com / Twitter read-only CLI for exec tool
-RUN npm install -g @steipete/bird
-
-# Build the bird MCP server
-WORKDIR /app/services/bird-mcp
-RUN npm install && npm run build
+# Twitter MCP server is run via uvx at runtime (mcp-twikit)
 
 # Build the news-pipeline MCP server
 WORKDIR /app/services/news-pipeline-mcp

@@ -22,6 +22,17 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  bird-api:
+    build:
+      context: ./services/bird-api
+      dockerfile: Dockerfile
+    container_name: bird-api
+    restart: unless-stopped
+    ports:
+      - "18791:18791"
+    environment:
+      - PORT=18791
+
   searxng:
     image: searxng/searxng:latest
     container_name: searxng

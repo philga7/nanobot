@@ -1,38 +1,18 @@
 ---
 name: twitter
-description: Read X.com (Twitter) profiles and tweets via the bird CLI (no official API).
+description: Search X.com (Twitter) and read timelines via the bird-api HTTP service (bird CLI).
 homepage: https://github.com/steipete/bird
-metadata: {"nanobot":{"emoji":"🐦","requires":{"bins":["bird"]}}}
+metadata: {"nanobot":{"emoji":"🐦","requires":{"tools":["web_fetch"]}}}
 ---
 
-# X / Twitter (bird CLI)
+# X / Twitter (bird-api)
 
-Use the **exec** tool to run the `bird` CLI for read-only X.com (Twitter) access: profiles, tweets, and timelines. Bird uses X's undocumented web API with cookie-based auth.
+Use **web_fetch** to call the bird-api HTTP service (http://bird-api:18791) for read-only X.com (Twitter) access.
 
-**Install**: `npm install -g @steipete/bird` (or ensure `bird` is on PATH in your environment).
+Endpoints:
+- `GET /profile?handle=@foo` — account info (bird about)
+- `GET /timeline?handle=@foo&limit=20` — user timeline (bird user-tweets)
+- `GET /search?q=query&limit=10` — search tweets (bird search)
+- `GET /health` — liveness check
 
-**Auth**: Bird requires cookie-based authentication. Configure it per environment (e.g. env or config file). See the [bird repo](https://github.com/steipete/bird) for setup. Do not use for automated posting — read-only use is safer.
-
-## Commands (use via exec)
-
-**Profile** — show user profile and recent info:
-```bash
-bird profile @handle
-```
-
-**Read tweets** — timeline or user's recent tweets:
-```bash
-bird read @handle
-```
-
-**Search** (if supported by your bird version):
-```bash
-bird search "query"
-```
-
-**Mentions / other** — check bird help for current commands:
-```bash
-bird --help
-```
-
-Prefer read-only commands. Posting/replies can trigger rate limits or blocks on automated use.
+Bird uses cookie auth. Configure `AUTH_TOKEN` and `CT0` in the bird-api container env (see .env.wrenair).
