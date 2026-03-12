@@ -1,0 +1,11 @@
+# Optional override for WrenAir instance.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.wrenair.yml up -d
+# Ensure ~/.wrenair/config.json exists and sets tools.web.search.searxngUrl to http://searxng:8080
+
+services:
+  nanobot-gateway:
+    env_file:
+      - .env.wrenair
+    volumes:
+      - ~/.wrenair:/root/.wrenair
+    command: ["gateway", "--config", "/root/.wrenair/config.json"]

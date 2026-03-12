@@ -1,0 +1,6 @@
+[submodule "services/library-mcp"]
+	path = services/library-mcp
+	url = https://github.com/YUZongmin/sqlite-literature-management-fastmcp-mcp-server.git
+[submodule "services/mcp-ts-sdk"]
+	path = services/mcp-ts-sdk
+	url = https://github.com/modelcontextprotocol/typescript-sdk.git

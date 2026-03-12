@@ -32,6 +32,9 @@ class SubagentManager:
         web_proxy: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
+        search_backend: str = "brave",
+        search_searxng_url: str = "",
+        search_max_results: int = 5,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.provider = provider
@@ -42,6 +45,9 @@ class SubagentManager:
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
+        self._search_backend = search_backend or "brave"
+        self._search_searxng_url = search_searxng_url or ""
+        self._search_max_results = search_max_results
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
 
@@ -101,7 +107,13 @@ class SubagentManager:
                 restrict_to_workspace=self.restrict_to_workspace,
                 path_append=self.exec_config.path_append,
             ))
-            tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
+            tools.register(WebSearchTool(
+                api_key=self.brave_api_key,
+                max_results=self._search_max_results,
+                proxy=self.web_proxy,
+                backend=self._search_backend,
+                searxng_url=self._search_searxng_url,
+            ))
             tools.register(WebFetchTool(proxy=self.web_proxy))
             
             system_prompt = self._build_subagent_prompt()

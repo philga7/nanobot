@@ -19,8 +19,9 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, instance_name: str | None = None):
         self.workspace = workspace
+        self.instance_name = instance_name
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
 
@@ -72,9 +73,10 @@ Skills with available="false" need dependencies installed first - you can try in
 - Use file tools when they are simpler or more reliable than shell commands.
 """
 
-        return f"""# nanobot 🐈
+        name = (self.instance_name or "nanobot").strip() or "nanobot"
+        return f"""# {name} 🐈
 
-You are nanobot, a helpful AI assistant.
+You are {name}, a helpful AI assistant.
 
 ## Runtime
 {runtime}
@@ -87,7 +89,7 @@ Your workspace is at: {workspace_path}
 
 {platform_policy}
 
-## nanobot Guidelines
+## Guidelines
 - State intent before tool calls, but NEVER predict or claim results before receiving them.
 - Before modifying a file, read it first. Do not assume files or directories exist.
 - After writing or editing a file, re-read it if accuracy matters.

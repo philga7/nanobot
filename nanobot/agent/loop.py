@@ -21,6 +21,7 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
+from nanobot.agent.memory_sqlite import MemorySqliteStore, SearchMemoryTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
@@ -61,6 +62,12 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        instance_name: str | None = None,
+        search_backend: str = "brave",
+        search_searxng_url: str = "",
+        search_max_results: int = 5,
+        memory_sqlite_path: Path | None = None,
+        memory_max_search_results: int = 10,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -76,9 +83,12 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(workspace, instance_name=instance_name)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
+        self._search_backend = search_backend or "brave"
+        self._search_searxng_url = search_searxng_url or ""
+        self._search_max_results = search_max_results
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -88,6 +98,9 @@ class AgentLoop:
             web_proxy=web_proxy,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
+            search_backend=self._search_backend,
+            search_searxng_url=self._search_searxng_url,
+            search_max_results=self._search_max_results,
         )
 
         self._running = False
@@ -97,6 +110,9 @@ class AgentLoop:
         self._mcp_connecting = False
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_lock = asyncio.Lock()
+        self._memory_sqlite_store: MemorySqliteStore | None = None
+        if memory_sqlite_path is not None:
+            self._memory_sqlite_store = MemorySqliteStore(memory_sqlite_path)
         self.memory_consolidator = MemoryConsolidator(
             workspace=workspace,
             provider=provider,
@@ -105,7 +121,9 @@ class AgentLoop:
             context_window_tokens=context_window_tokens,
             build_messages=self.context.build_messages,
             get_tool_definitions=self.tools.get_definitions,
+            sqlite_store=self._memory_sqlite_store,
         )
+        self._memory_max_search_results = memory_max_search_results
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -119,8 +137,18 @@ class AgentLoop:
             restrict_to_workspace=self.restrict_to_workspace,
             path_append=self.exec_config.path_append,
         ))
-        self.tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
+        self.tools.register(WebSearchTool(
+            api_key=self.brave_api_key,
+            max_results=self._search_max_results,
+            proxy=self.web_proxy,
+            backend=self._search_backend,
+            searxng_url=self._search_searxng_url,
+        ))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
+        if self._memory_sqlite_store is not None:
+            self.tools.register(
+                SearchMemoryTool(self._memory_sqlite_store, self._memory_max_search_results)
+            )
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:

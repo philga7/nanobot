@@ -232,6 +232,7 @@ class AgentDefaults(Base):
     """Default agent configuration."""
 
     workspace: str = "~/.nanobot/workspace"
+    instance_name: str | None = None  # e.g. "WrenAir", "WrenVPS", "WrenPro"; used in system prompt
     model: str = "anthropic/claude-opus-4-5"
     provider: str = (
         "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
@@ -306,7 +307,9 @@ class GatewayConfig(Base):
 class WebSearchConfig(Base):
     """Web search tool configuration."""
 
-    api_key: str = ""  # Brave Search API key
+    backend: Literal["brave", "searxng"] = "brave"
+    api_key: str = ""  # Brave Search API key (required when backend is brave)
+    searxng_url: str = ""  # e.g. http://searxng:8080 or http://localhost:8080 (when backend is searxng)
     max_results: int = 5
 
 
@@ -317,6 +320,14 @@ class WebToolsConfig(Base):
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+
+
+class MemoryConfig(Base):
+    """Optional SQLite+FTS5 memory store for search/recall."""
+
+    sqlite_enabled: bool = False
+    db_path: str = ""  # Empty = use data_dir/memory.db
+    max_search_results: int = 10
 
 
 class ExecToolConfig(Base):
@@ -333,6 +344,7 @@ class MCPServerConfig(Base):
     command: str = ""  # Stdio: command to run (e.g. "npx")
     args: list[str] = Field(default_factory=list)  # Stdio: command arguments
     env: dict[str, str] = Field(default_factory=dict)  # Stdio: extra env vars
+    cwd: str = ""  # Stdio: working directory (e.g. for Python MCP servers run from a repo)
     url: str = ""  # HTTP/SSE: endpoint URL
     headers: dict[str, str] = Field(default_factory=dict)  # HTTP/SSE: custom headers
     tool_timeout: int = 30  # seconds before a tool call is cancelled
@@ -343,6 +355,7 @@ class ToolsConfig(Base):
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 

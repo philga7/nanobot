@@ -1,0 +1,39 @@
+{
+  "agents": {
+    "defaults": {
+      "instanceName": "WrenPro",
+      "workspace": "~/.wrenpro/workspace",
+      "model": "anthropic/claude-sonnet-4",
+      "provider": "auto",
+      "maxTokens": 8192,
+      "contextWindowTokens": 65536,
+      "temperature": 0.1,
+      "maxToolIterations": 40
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "backend": "searxng",
+        "searxngUrl": "http://localhost:8080",
+        "maxResults": 5
+      }
+    },
+    "mcpServers": {
+      "todo": {
+        "command": "npx",
+        "args": ["-y", "todo-mcp-server"],
+        "type": "stdio",
+        "env": { "TODO_DB_PATH": "/absolute/path/to/wrenpro/todos.db" },
+        "toolTimeout": 30
+      },
+      "memento": {
+        "command": "npx",
+        "args": ["-y", "@iachilles/memento"],
+        "type": "stdio",
+        "env": { "MEMENTO_DB_PATH": "/absolute/path/to/wrenpro/memento.db" },
+        "toolTimeout": 30
+      }
+    }
+  }
+}

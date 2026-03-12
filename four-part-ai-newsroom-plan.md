@@ -1,0 +1,272 @@
+# Four-Part AI Newsroom — Product & Architecture Plan
+
+> **Version**: 1.0 · March 2026  
+> **Owner**: OpenClaw / NanoBot  
+> **Status**: Design Phase
+
+---
+
+## Overview
+
+This document describes the product design and architecture for the OpenClaw **Four-Part AI Newsroom** — a system that replaces a single monolithic news-posting script with a layered, editorially-controlled intelligence pipeline. The system is composed of four MCP servers, each with a distinct role, orchestrated by NanoBot agents.
+
+---
+
+## The Core Problem
+
+The existing OpenClaw news pipeline is a **script that posts things**. It runs, scores, and fires output to Slack — and you find out what happened after the fact. There is no editorial review layer, no operational audit trail, no persistent action queue, and no queryable knowledge base for config. This works until it doesn't: false positives auto-post, stories that needed review slip through, and debugging why something did or didn't surface requires reading raw JSON files.
+
+---
+
+## The Four Parts
+
+### 1. `news-pipeline-mcp` — The Wire Service & Compute Engine
+
+**What it is**: The intelligence core. It scans CFP for BREAKING/LIVE badges, runs SearXNG topic searches, collects commentator signals from X/Twitter, scores every story, dedupes against history, and formats output as Senior Analyst bullets.
+
+**What it does NOT do**: It never posts to Slack. It never calls ntfy. It never decides what to do with results. It only **finds, evaluates, and returns**.
+
+**Tools exposed**:
+- `news_run_job` — Run a named job, return structured results + suggestedActions
+- `news_preview_breaking_news` — Phase 0–6 pipeline for breaking news only
+- `news_get_config` — Read-only structured view of editorial config
+- `news_get_history_status` — Dedup/history state for a topic or URL
+
+**Key design rules**:
+- All config reads from `OPENCLAW_BASE_DIR` (default: `/root/.openclaw`)
+- Sunday quiet window (6 AM–12:30 PM ET) is a first-class guard
+- `dryRun: true` computes everything but never mutates history files
+- Returns `deliveryPolicy` per job (`autoPost` / `previewOnly` / `returnOnly`)
+
+---
+
+### 2. `library-mcp` — The Editorial Style Guide & Source Rolodex
+
+**Port**: `3012`  
+**What it is**: A queryable Markdown knowledge base that indexes your editorial policy documents — priority topics, urgency keywords, ignored topics, commentator handles.
+
+**What it replaces**: Raw file reads inside `ConfigLoader`. Instead of the pipeline reading `.md` files every run, they live in the library as searchable, tag-filtered collections.
+
+**How segregation works**:
+- Each **datapack** = a separate folder of `.md` files with YAML frontmatter
+- Tags in frontmatter (e.g. `tags: [georgia, breaking, config]`) enable filtered retrieval
+- Multiple independent knowledge bases can be registered — one for news config, one for personal reference, one for project documentation
+- Retrieval by tag, date range, full-text search, or URL
+
+**Example datapacks**:
+| Datapack | Path | Contents |
+|---|---|---|
+| `news-config` | `~/.openclaw/data/` | priority topics, urgency keywords, ignored topics |
+| `news-sources` | `~/.openclaw/workspace/sources/` | commentators, source profiles |
+| `personal-reference` | `~/library/personal/` | personal notes, reference docs |
+| `project-docs` | `~/library/projects/` | architecture docs, design notes |
+
+**Product value**: Agents can ask "show me all Georgia-tagged priority topics" or "which commentators are marked intel-signals" at any time — not just at pipeline runtime. Updating editorial policy is editing a Markdown file, not touching pipeline code.
+
+---
+
+### 3. `journaling-mcp` — The Assignment Editor's Logbook
+
+**Port**: `3010`  
+**What it is**: A persistent, human-readable operational record of every pipeline run, decision, and agent action. Completely separate from the dedup `HistoryStore`.
+
+**HistoryStore vs. Journal — the critical distinction**:
+| | `news_history.json` (HistoryStore) | journaling-mcp |
+|---|---|---|
+| **Question answered** | "Has this URL been seen before?" | "What did the pipeline do and why?" |
+| **Format** | Normalized JSON keyed by URL+topic | Human-readable timestamped entries |
+| **Purpose** | Dedup engine | Operational audit trail |
+| **Read by** | Pipeline at runtime | You, agents for debugging |
+
+**How segregation works**:
+- Journal entries support **tags** and **entry types** (e.g. `news-run`, `intel-signal`, `personal`, `work`)
+- Separate journal sessions can be scoped by topic, project, or agent
+- Entries can be searched by tag, date range, or natural language time queries ("last week", "yesterday")
+- A personal journal and a work/news operational log can coexist as separate tagged streams
+
+**What gets logged per run**:
+```
+Job: breaking-news-sweep
+Ran at: 2026-03-10T21:00:00 ET
+Items found: 7 | Posted: 4 | Quiet window: false
+Top story: "Senate passes budget reconciliation" (score: 9)
+Delivery: autoPost → #breaking-news
+```
+
+**Product value**: When you want to answer "what breaking news ran in the last 3 days" or "why didn't that story surface on Sunday," you pull the journal — not a raw JSON file.
+
+---
+
+### 4. `todo-md-mcp` — The Editorial Queue & Story Assignment Board
+
+**Port**: `3011`  
+**What it is**: A persistent, Markdown-backed action queue for stories that need editorial review before posting.
+
+**How segregation works**:
+- `todo-md-mcp` is a single-file server controlled by the `TODO_FILE_PATH` environment variable
+- **Multiple instances = multiple lists**: Deploy separate named instances pointing to different files for complete isolation
+- Alternatively, use text-based prefixes in the todo content (e.g. `[BREAKING]`, `[GEORGIA]`, `[PERSONAL]`) for lightweight tagging within a single list
+
+**Recommended multi-instance config**:
+```json
+"todo-news-review": {
+  "url": "http://todo-news-mcp:3011/mcp",
+  "toolTimeout": 30
+},
+"todo-personal": {
+  "url": "http://todo-personal-mcp:3013/mcp",
+  "toolTimeout": 30
+}
+```
+Each instance points to a different file: `~/.openclaw/queue/news-review.md`, `~/todos/personal.md`, etc.
+
+**How it fits the delivery model**:
+| Delivery Mode | Agent Action |
+|---|---|
+| `autoPost` | Iterates `suggestedActions` → calls Slack + ntfy tools immediately |
+| `previewOnly` | Writes each qualifying story as a todo item for async review |
+| `returnOnly` | Surfaces results in conversation only, no persistence |
+
+**Product value**: `previewOnly` jobs run on schedule, results queue up, and you review/approve on your own time. High-priority stories (score 8–10) can be routed to an urgent list. The pipeline runs without you watching Slack in real time.
+
+---
+
+## Delivery Policy Model
+
+Per-job delivery policy lives in `~/.openclaw/cron/jobs.json`:
+
+```json
+{
+  "id": "breaking-news-sweep",
+  "type": "breaking",
+  "description": "CFP + topic scan for breaking/live stories",
+  "scheduleHint": "*/30 6-23 * * *",
+  "owner": "cipher",
+  "deliveryPolicy": {
+    "mode": "autoPost",
+    "channels": ["#breaking-news"],
+    "ntfy": true
+  }
+},
+{
+  "id": "intel-signals-sweep",
+  "type": "intel",
+  "description": "Commentator narrative signals from X",
+  "scheduleHint": "0 */2 * * *",
+  "owner": "analyst",
+  "deliveryPolicy": {
+    "mode": "previewOnly",
+    "channels": ["#intel-signals"],
+    "ntfy": false
+  }
+}
+```
+
+---
+
+## Full System Architecture
+
+```
+NanoBot Agents
+│
+├── news_run_job(jobId)
+│     └──▶ news-pipeline-mcp (compute engine)
+│               ├── ConfigLoader ◀──▶ library-mcp (editorial knowledge)
+│               ├── cfpScanner ──▶ SearXNG
+│               ├── topicSearch ──▶ SearXNG
+│               ├── narrativeCollector ──▶ X/Twitter API
+│               ├── HistoryStore ◀──▶ news_history.json (dedup only)
+│               └── SlackFormatter
+│                     └──▶ Returns: items[], deliveryPolicy, suggestedActions
+│
+├── On result received:
+│     ├── [autoPost] → Slack Gateway + ntfy MCP
+│     ├── [previewOnly] → todo-md-mcp (review queue)
+│     └── [returnOnly] → surface in conversation
+│
+└── After every run:
+      └── journaling-mcp (operational audit log)
+```
+
+---
+
+## NanoBot Configuration
+
+```json
+{
+  "tools": {
+    "mcpServers": {
+      "journaling": {
+        "url": "http://journaling-mcp:3010/mcp",
+        "toolTimeout": 60
+      },
+      "todo-md": {
+        "url": "http://todo-md-mcp:3011/mcp",
+        "toolTimeout": 30
+      },
+      "library": {
+        "url": "http://library-mcp:3012/mcp",
+        "toolTimeout": 60
+      },
+      "newsPipeline": {
+        "command": "node",
+        "args": ["/app/services/news-pipeline-mcp/dist/index.js"],
+        "env": {
+          "OPENCLAW_BASE_DIR": "/root/.openclaw",
+          "SEARXNG_BASE_URL": "http://searxng:8080",
+          "X_AUTH_TOKEN": "...",
+          "X_CT0": "..."
+        },
+        "toolTimeout": 60
+      }
+    }
+  }
+}
+```
+
+---
+
+## Implementation Roadmap
+
+### Phase 1 — Scaffold & Core Pipeline
+- [ ] Create `services/news-pipeline-mcp/` (TypeScript, patterned after `bird-mcp`)
+- [ ] Define `NewsItem`, `NarrativeSignal`, `DeliveryPolicy`, `JobDefinition` interfaces
+- [ ] Implement `ConfigLoader`, `cfpScanner`, `topicSearch`, `narrativeCollector`, `HistoryStore`, `SlackFormatter`
+- [ ] Wire into `news_run_job` and `news_preview_breaking_news` via `@modelcontextprotocol/sdk`
+
+### Phase 2 — MCP Tool Exposure
+- [ ] Expose `news_run_job`, `news_preview_breaking_news`, `news_get_config`, `news_get_history_status`
+- [ ] Add `news_get_config` as a library-mcp proxy (datapack-backed)
+- [ ] Add quiet window guard as first-class behavior
+
+### Phase 3 — NanoBot Integration
+- [ ] Add all four MCP server entries to `~/.nanobot/config.json`
+- [ ] Implement agent-side delivery logic (autoPost → Slack/ntfy, previewOnly → todo-md, every run → journaling)
+- [ ] Create/update `~/.openclaw/cron/jobs.json` with delivery policies per job
+
+### Phase 4 — Validation
+- [ ] Run `dryRun: true` comparisons against existing OpenClaw pipeline
+- [ ] Validate scoring, quiet window, dedupe, Slack formatting
+- [ ] Compare journal entries vs. existing log files
+- [ ] Sign off on behavior parity before switching live
+
+---
+
+## Key Design Principles
+
+1. **news-pipeline-mcp never calls the other three MCPs** — it is a pure compute service. Agents own orchestration.
+2. **HistoryStore ≠ Journal** — dedup JSON files and the operational log serve completely different purposes and must never be conflated.
+3. **Delivery policy is per-job, not per-system** — automation is a dial you control at the job level, not a binary switch.
+4. **Segregation is first-class** — library datapacks, journal tags, and todo-md instances all support independent topic/context separation out of the box.
+5. **Config is Markdown, code is TypeScript** — editorial policy changes never require code deploys.
+
+---
+
+## Future Enhancements
+
+- `news_explain_score` tool — for a given URL, explain how its score was computed
+- Weather and portfolio SMA200 tools reusing the same scoring + formatting engine
+- Shared scoring DSL for topics/keywords — tweak scoring weights without code changes
+- Library-backed commentator profiles with sentiment history
+- Multi-instance todo-md for personal vs. work vs. urgent review queues
+

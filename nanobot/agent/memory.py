@@ -98,8 +98,9 @@ class MemoryStore:
         messages: list[dict],
         provider: LLMProvider,
         model: str,
+        sqlite_store: Any = None,
     ) -> bool:
-        """Consolidate the provided message chunk into MEMORY.md + HISTORY.md."""
+        """Consolidate the provided message chunk into MEMORY.md + HISTORY.md (and optionally SQLite)."""
         if not messages:
             return True
 
@@ -131,12 +132,20 @@ class MemoryStore:
                 logger.warning("Memory consolidation: unexpected save_memory arguments")
                 return False
 
-            if entry := args.get("history_entry"):
-                self.append_history(_ensure_text(entry))
+            entry: str | None = None
+            if e := args.get("history_entry"):
+                entry = _ensure_text(e)
+                self.append_history(entry)
             if update := args.get("memory_update"):
                 update = _ensure_text(update)
                 if update != current_memory:
                     self.write_long_term(update)
+
+            if sqlite_store is not None and entry:
+                try:
+                    sqlite_store.insert(entry, "consolidation")
+                except Exception as e:
+                    logger.debug("SQLite memory insert skipped: {}", e)
 
             logger.info("Memory consolidation done for {} messages", len(messages))
             return True
@@ -159,6 +168,7 @@ class MemoryConsolidator:
         context_window_tokens: int,
         build_messages: Callable[..., list[dict[str, Any]]],
         get_tool_definitions: Callable[[], list[dict[str, Any]]],
+        sqlite_store: Any = None,
     ):
         self.store = MemoryStore(workspace)
         self.provider = provider
@@ -167,6 +177,7 @@ class MemoryConsolidator:
         self.context_window_tokens = context_window_tokens
         self._build_messages = build_messages
         self._get_tool_definitions = get_tool_definitions
+        self._sqlite_store = sqlite_store
         self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
     def get_lock(self, session_key: str) -> asyncio.Lock:
@@ -175,7 +186,9 @@ class MemoryConsolidator:
 
     async def consolidate_messages(self, messages: list[dict[str, object]]) -> bool:
         """Archive a selected message chunk into persistent memory."""
-        return await self.store.consolidate(messages, self.provider, self.model)
+        return await self.store.consolidate(
+            messages, self.provider, self.model, sqlite_store=self._sqlite_store
+        )
 
     def pick_consolidation_boundary(
         self,

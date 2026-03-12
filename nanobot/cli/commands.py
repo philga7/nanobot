@@ -29,7 +29,7 @@ from rich.table import Table
 from rich.text import Text
 
 from nanobot import __logo__, __version__
-from nanobot.config.paths import get_workspace_path
+from nanobot.config.paths import get_data_dir, get_workspace_path
 from nanobot.config.schema import Config
 from nanobot.utils.helpers import sync_workspace_templates
 
@@ -356,6 +356,16 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        instance_name=config.agents.defaults.instance_name,
+        search_backend=config.tools.web.search.backend,
+        search_searxng_url=config.tools.web.search.searxng_url or "",
+        search_max_results=config.tools.web.search.max_results,
+        memory_sqlite_path=(
+            (Path(config.tools.memory.db_path).expanduser() if config.tools.memory.db_path
+             else get_data_dir() / "memory.db")
+            if config.tools.memory.sqlite_enabled else None
+        ),
+        memory_max_search_results=config.tools.memory.max_search_results,
     )
 
     # Set cron callback (needs agent)
@@ -538,6 +548,16 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        instance_name=config.agents.defaults.instance_name,
+        search_backend=config.tools.web.search.backend,
+        search_searxng_url=config.tools.web.search.searxng_url or "",
+        search_max_results=config.tools.web.search.max_results,
+        memory_sqlite_path=(
+            (Path(config.tools.memory.db_path).expanduser() if config.tools.memory.db_path
+             else get_data_dir() / "memory.db")
+            if config.tools.memory.sqlite_enabled else None
+        ),
+        memory_max_search_results=config.tools.memory.max_search_results,
     )
 
     # Show spinner when logs are off (no output to miss); skip when logs are on
