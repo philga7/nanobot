@@ -9,3 +9,12 @@ services:
     volumes:
       - ~/.wrenvps:/root/.wrenvps
     command: ["gateway", "--config", "/root/.wrenvps/config.json"]
+
+  # Separate SearXNG instance for WrenVPS to avoid
+  # container-name / port conflicts with any existing searxng.
+  searxng:
+    container_name: searxng_vps
+    env_file:
+      - .env.wrenvps
+    ports:
+      - "8081:8080"
