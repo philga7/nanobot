@@ -45,7 +45,7 @@ def _validate_url(url: str) -> tuple[bool, str]:
 
 
 class WebSearchTool(Tool):
-    """Search the web using Brave Search API."""
+    """Search the web using Brave Search API or a self-hosted SearXNG instance."""
 
     name = "web_search"
     description = "Search the web. Returns titles, URLs, and snippets."
@@ -58,10 +58,19 @@ class WebSearchTool(Tool):
         "required": ["query"]
     }
 
-    def __init__(self, api_key: str | None = None, max_results: int = 5, proxy: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        max_results: int = 5,
+        proxy: str | None = None,
+        backend: str = "brave",
+        searxng_url: str = "",
+    ):
         self._init_api_key = api_key
         self.max_results = max_results
         self.proxy = proxy
+        self.backend = backend or "brave"
+        self.searxng_url = (searxng_url or "").rstrip("/")
 
     @property
     def api_key(self) -> str:
@@ -69,29 +78,67 @@ class WebSearchTool(Tool):
         return self._init_api_key or os.environ.get("BRAVE_API_KEY", "")
 
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
+        n = min(max(count or self.max_results, 1), 10)
+        if self.backend == "searxng":
+            return await self._search_searxng(query, n)
+        return await self._search_brave(query, n)
+
+    async def _search_searxng(self, query: str, n: int) -> str:
+        if not self.searxng_url:
+            return (
+                "Error: SearXNG URL not configured. Set tools.web.search.searxngUrl in config "
+                "(e.g. http://searxng:8080 or http://localhost:8080), then restart."
+            )
+        try:
+            url = f"{self.searxng_url}/search"
+            params = {"q": query, "format": "json", "pageno": 1}
+            logger.debug("WebSearch (SearXNG): {}", self.searxng_url)
+            async with httpx.AsyncClient(proxy=self.proxy, timeout=15.0) as client:
+                r = await client.get(url, params=params)
+                r.raise_for_status()
+            data = r.json()
+            # SearXNG JSON: results list with title, url, content
+            raw = data.get("results", [])[:n]
+            results = [
+                {"title": item.get("title", ""), "url": item.get("url", ""), "description": item.get("content", "")}
+                for item in raw
+            ]
+        except httpx.ProxyError as e:
+            logger.error("WebSearch (SearXNG) proxy error: {}", e)
+            return f"Proxy error: {e}"
+        except Exception as e:
+            logger.error("WebSearch (SearXNG) error: {}", e)
+            return f"Error: {e}"
+
+        if not results:
+            return f"No results for: {query}"
+        lines = [f"Results for: {query}\n"]
+        for i, item in enumerate(results, 1):
+            lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')}")
+            if desc := item.get("description"):
+                lines.append(f"   {desc}")
+        return "\n".join(lines)
+
+    async def _search_brave(self, query: str, n: int) -> str:
         if not self.api_key:
             return (
                 "Error: Brave Search API key not configured. Set it in "
                 "~/.nanobot/config.json under tools.web.search.apiKey "
                 "(or export BRAVE_API_KEY), then restart the gateway."
             )
-
         try:
-            n = min(max(count or self.max_results, 1), 10)
-            logger.debug("WebSearch: {}", "proxy enabled" if self.proxy else "direct connection")
+            logger.debug("WebSearch (Brave): {}", "proxy enabled" if self.proxy else "direct connection")
             async with httpx.AsyncClient(proxy=self.proxy) as client:
                 r = await client.get(
                     "https://api.search.brave.com/res/v1/web/search",
                     params={"q": query, "count": n},
                     headers={"Accept": "application/json", "X-Subscription-Token": self.api_key},
-                    timeout=10.0
+                    timeout=10.0,
                 )
                 r.raise_for_status()
-
             results = r.json().get("web", {}).get("results", [])[:n]
             if not results:
                 return f"No results for: {query}"
-
             lines = [f"Results for: {query}\n"]
             for i, item in enumerate(results, 1):
                 lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')}")

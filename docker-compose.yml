@@ -21,7 +21,18 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
-  
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - searxng-data:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+
   nanobot-cli:
     <<: *common-config
     profiles:
@@ -29,3 +40,6 @@ services:
     command: ["status"]
     stdin_open: true
     tty: true
+
+volumes:
+  searxng-data:

@@ -1126,6 +1126,8 @@ nanobot gateway --config ~/.nanobot-telegram/config.json --workspace /tmp/nanobo
 - `--workspace` overrides the workspace defined in the config file
 - Cron jobs and runtime media/state are derived from the config directory
 
+**See also:** [INSTANCES.md](INSTANCES.md) for WrenAir/WrenVPS/WrenPro setup and [DOCKER.md](DOCKER.md) for one-command Docker stand up/tear down with SearXNG.
+
 ## 💻 CLI Reference
 
 | Command | Description |

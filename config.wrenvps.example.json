@@ -1,0 +1,122 @@
+{
+  "agents": {
+    "defaults": {
+      "instanceName": "WrenAir",
+      "workspace": "~/.wrenair/workspace",
+      "model": "gemini-3-flash-preview",
+      "provider": "custom",
+      "maxTokens": 8192,
+      "contextWindowTokens": 65536,
+      "temperature": 0.1,
+      "maxToolIterations": 40
+    }
+  },
+  "providers": {
+    "custom": {
+      "apiKey": "YOUR_CUSTOM_API_KEY",
+      "apiBase": "https://ollama.com/v1"
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "YOUR_TELEGRAM_BOT_TOKEN",
+      "allowFrom": [
+        "1461042142"
+      ]
+    },
+    "slack": {
+      "enabled": true,
+      "botToken": "YOUR_SLACK_BOT_TOKEN",
+      "appToken": "YOUR_SLACK_APP_TOKEN",
+      "allowFrom": ["D0AFVDWEUP5"],
+      "listenChannels": [
+        { "channel": "general",         "requireMention": false },
+        { "channel": "home",            "requireMention": false },
+        { "channel": "work",            "requireMention": false },
+        { "channel": "fixes",           "requireMention": false },
+        { "channel": "theology",        "requireMention": false },
+        { "channel": "events",          "requireMention": false },
+        { "channel": "wren-ops",        "requireMention": false },
+        { "channel": "news-review",     "requireMention": false },
+        { "channel": "breaking-news",   "requireMention": true },
+        { "channel": "intel-signals",   "requireMention": true },
+        { "channel": "georgia-news",    "requireMention": true },
+        { "channel": "weather",         "requireMention": true },
+        { "channel": "news",            "requireMention": true },
+        { "channel": "ai-ml",           "requireMention": true },
+        { "channel": "tech",            "requireMention": true },
+        { "channel": "software-updates","requireMention": true },
+        { "channel": "finance",         "requireMention": true },
+        { "channel": "investing",       "requireMention": true }
+      ],
+      "postChannels": ["pipeline-log"]
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "backend": "searxng",
+        "searxngUrl": "http://localhost:8080",
+        "maxResults": 5
+      }
+    },
+    "mcpServers": {
+      "todo": {
+        "command": "npx",
+        "args": ["-y", "todo-mcp-server"],
+        "type": "stdio",
+        "env": {
+          "TODO_DB_PATH": "/absolute/path/to/wrenair/todos.db"
+        },
+        "toolTimeout": 30
+      },
+      "bird": {
+        "command": "node",
+        "args": ["/app/services/bird-mcp/dist/index.js"],
+        "type": "stdio",
+        "env": {
+          "AUTH_TOKEN": "YOUR_BIRD_AUTH_TOKEN",
+          "CT0": "YOUR_BIRD_CT0_COOKIE"
+        },
+        "toolTimeout": 30
+      },
+      "ntfy": {
+        "command": "npx",
+        "args": ["-y", "ntfy-me-mcp"],
+        "type": "stdio",
+        "env": {
+          "NTFY_TOPIC": "wrenair-notifications",
+          "NTFY_URL": "https://ntfy.informedcrew.com",
+          "NTFY_TOKEN": "YOUR_NTFY_TOKEN"
+        },
+        "toolTimeout": 30
+      },
+      "memento": {
+        "command": "npx",
+        "args": ["-y", "@iachilles/memento"],
+        "type": "stdio",
+        "env": {
+          "MEMENTO_DB_PATH": "/absolute/path/to/wrenair/memento.db"
+        },
+        "toolTimeout": 30
+      },
+      "library": {
+        "command": "uv",
+        "args": ["run", "sqlite-literature-management-fastmcp-mcp-server"],
+        "type": "stdio",
+        "cwd": "/app/services/library-mcp",
+        "toolTimeout": 60
+      },
+      "newsPipeline": {
+        "command": "node",
+        "args": ["/app/services/news-pipeline-mcp/dist/index.js"],
+        "type": "stdio",
+        "env": {
+          "OPENCLAW_BASE_DIR": "/root/.openclaw"
+        },
+        "toolTimeout": 60
+      }
+    }
+  }
+}
