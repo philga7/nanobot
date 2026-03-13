@@ -362,7 +362,6 @@ def gateway(
     """Start the nanobot gateway."""
     from loguru import logger
     from nanobot.agent.loop import AgentLoop
-    from nanobot.agent.tools.mcp import MCPToolWrapper
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
     from nanobot.config.paths import get_cron_dir
@@ -447,29 +446,35 @@ def gateway(
             if isinstance(cron_tool, CronTool) and cron_token is not None:
                 cron_tool.reset_cron_context(cron_token)
 
-        # Fire-and-forget ntfy notification after MCP tools are connected via process_direct.
+        # Fire-and-forget direct HTTP notification to ntfy after MCP tools are connected.
         if message:
-            ntfy_tool = agent.tools.get("mcp_ntfy_ntfy_me")
-            if ntfy_tool and isinstance(ntfy_tool, MCPToolWrapper):
-                kwargs: dict[str, object] = {
-                    "taskTitle": message,
-                    "taskSummary": message,
+            ntfy_url = os.getenv("NTFY_URL")
+            ntfy_topic = os.getenv("NTFY_TOPIC")
+            if ntfy_url and ntfy_topic:
+                import httpx
+
+                target = ntfy_url.rstrip("/") + "/" + ntfy_topic
+                headers: dict[str, str] = {
+                    "X-Title": message,
+                    "X-Markdown": "true",
                 }
-                ntfy_url = os.getenv("NTFY_URL")
-                ntfy_topic = os.getenv("NTFY_TOPIC")
                 access_token = os.getenv("NTFY_TOKEN")
-                if ntfy_url:
-                    kwargs["ntfyUrl"] = ntfy_url
-                if ntfy_topic:
-                    kwargs["ntfyTopic"] = ntfy_topic
                 if access_token:
-                    kwargs["accessToken"] = access_token
+                    headers["Authorization"] = f"Bearer {access_token}"
 
                 try:
-                    await ntfy_tool.execute(**kwargs)
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        resp = await client.post(target, content=message.encode("utf-8"), headers=headers)
+                    if resp.status_code >= 400:
+                        logger.error(
+                            "Cron: ntfy HTTP {} for job {}: {}",
+                            resp.status_code,
+                            job.id,
+                            (resp.text or "")[:200],
+                        )
                 except Exception as exc:  # pragma: no cover - best-effort notification
                     logger.error(
-                        "Cron: failed to send ntfy notification for job {}: {}",
+                        "Cron: failed to send ntfy HTTP notification for job {}: {}",
                         job.id,
                         exc,
                     )
