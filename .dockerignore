@@ -11,3 +11,11 @@ build/
 node_modules/
 bridge/dist/
 workspace/
+
+# SQLite databases and Write-Ahead Log state
+*.db
+*.db-shm
+*.db-wal
+.nanobot/
+.wrenair/
+.wrenvps/
