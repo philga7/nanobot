@@ -24,12 +24,13 @@
       "allowFrom": [
         "YOUR_TELEGRAM_USER_ID"
       ]
-    },
+    }
+  },
   "tools": {
     "web": {
       "search": {
-        "backend": "searxng",
-        "searxngUrl": "http://localhost:8080",
+        "provider": "searxng",
+        "baseUrl": "http://localhost:8080",
         "maxResults": 5
       }
     },

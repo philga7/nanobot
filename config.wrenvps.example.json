@@ -29,8 +29,8 @@
   "tools": {
     "web": {
       "search": {
-        "backend": "searxng",
-        "searxngUrl": "http://localhost:8082",
+        "provider": "searxng",
+        "baseUrl": "http://localhost:8082",
         "maxResults": 5
       }
     },
