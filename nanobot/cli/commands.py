@@ -428,16 +428,23 @@ def gateway(
         message = job.payload.message or ""
         if message:
             ntfy_tool = agent.tools.get("mcp_ntfy_ntfy_me")
-            access_token = os.getenv("NTFY_TOKEN")
-            if ntfy_tool and isinstance(ntfy_tool, MCPToolWrapper) and access_token:
+            if ntfy_tool and isinstance(ntfy_tool, MCPToolWrapper):
+                kwargs: dict[str, object] = {
+                    "taskTitle": message,
+                    "taskSummary": message,
+                }
+                ntfy_url = os.getenv("NTFY_URL")
+                ntfy_topic = os.getenv("NTFY_TOPIC")
+                access_token = os.getenv("NTFY_TOKEN")
+                if ntfy_url:
+                    kwargs["ntfyUrl"] = ntfy_url
+                if ntfy_topic:
+                    kwargs["ntfyTopic"] = ntfy_topic
+                if access_token:
+                    kwargs["accessToken"] = access_token
+
                 try:
-                    await ntfy_tool.execute(
-                        taskTitle=message,
-                        taskSummary=message,
-                        ntfyUrl=os.getenv("NTFY_URL", "https://ntfy.informedcrew.com"),
-                        ntfyTopic=os.getenv("NTFY_TOPIC", "wrenvps-notifications"),
-                        accessToken=access_token,
-                    )
+                    await ntfy_tool.execute(**kwargs)
                 except Exception as exc:  # pragma: no cover - best-effort notification
                     logger.error(
                         "Cron: failed to send ntfy notification for job {}: {}",
