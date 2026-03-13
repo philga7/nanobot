@@ -454,8 +454,13 @@ def gateway(
                 import httpx
 
                 target = ntfy_url.rstrip("/") + "/" + ntfy_topic
+                # HTTP headers must be ASCII; fall back to a sanitized title.
+                try:
+                    title = message.encode("ascii", "ignore").decode("ascii") or "Reminder"
+                except Exception:
+                    title = "Reminder"
                 headers: dict[str, str] = {
-                    "X-Title": message,
+                    "X-Title": title,
                     "X-Markdown": "true",
                 }
                 access_token = os.getenv("NTFY_TOKEN")
