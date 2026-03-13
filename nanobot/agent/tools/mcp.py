@@ -38,16 +38,14 @@ class MCPToolWrapper(Tool):
         from mcp import types
 
         try:
-            result = await asyncio.wait_for(
-                self._session.call_tool(self._original_name, arguments=kwargs),
-                timeout=self._tool_timeout,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("MCP tool '{}' timed out after {}s", self._name, self._tool_timeout)
-            return f"(MCP tool call timed out after {self._tool_timeout}s)"
+            # Let the underlying MCP transport manage timeouts instead of wrapping
+            # the call in asyncio.wait_for, which can cancel the shared session and
+            # cause ClosedResourceError on subsequent tool calls for long-running
+            # servers like Memento.
+            result = await self._session.call_tool(self._original_name, arguments=kwargs)
         except asyncio.CancelledError:
-            # MCP SDK's anyio cancel scopes can leak CancelledError on timeout/failure.
-            # Re-raise only if our task was externally cancelled (e.g. /stop).
+            # If our task was explicitly cancelled (e.g. user /stop), propagate;
+            # otherwise treat it as a tool-level failure.
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise
