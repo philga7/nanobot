@@ -166,3 +166,15 @@ Keep a clear separation between:
 - **Logbook** (journaling).
 - **Queue & delivery** (todo MCP, channels, ntfy).
 
+---
+
+## 7. Memento journaling and batching
+
+When using the Memento journaling MCP for newsroom logs:
+
+- Prefer **small, frequent journal writes** over a single huge backfill.
+- If you need to write many entries at once (e.g. backfilling a large run), **batch them**:
+  - Group entities into chunks of roughly **10–25 entries per call**.
+  - Call the `mcp_memento_create_entities` tool once per batch and wait for it to complete before sending the next batch.
+- Avoid sending very large payloads in a single MCP call, as that can cause long-running operations that stress the MCP server and its stdio connection.
+
