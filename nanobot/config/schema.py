@@ -311,9 +311,9 @@ class GatewayConfig(Base):
 class WebSearchConfig(Base):
     """Web search tool configuration."""
 
-    backend: Literal["brave", "searxng"] = "brave"
-    api_key: str = ""  # Brave Search API key (required when backend is brave)
-    searxng_url: str = ""  # e.g. http://searxng:8080 or http://localhost:8080 (when backend is searxng)
+    provider: str = "brave"  # brave, tavily, duckduckgo, searxng, jina
+    api_key: str = ""
+    base_url: str = ""  # SearXNG base URL
     max_results: int = 5
 
 
