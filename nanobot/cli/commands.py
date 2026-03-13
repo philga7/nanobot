@@ -360,7 +360,9 @@ def gateway(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Start the nanobot gateway."""
+    from loguru import logger
     from nanobot.agent.loop import AgentLoop
+    from nanobot.agent.tools.mcp import MCPToolWrapper
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
     from nanobot.config.paths import get_cron_dir
@@ -418,12 +420,35 @@ def gateway(
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
+        import os
         from nanobot.agent.tools.cron import CronTool
         from nanobot.agent.tools.message import MessageTool
+
+        # Fire-and-forget ntfy notification if a message is present and MCP tool is available.
+        message = job.payload.message or ""
+        if message:
+            ntfy_tool = agent.tools.get("mcp_ntfy_ntfy_me")
+            access_token = os.getenv("NTFY_TOKEN")
+            if ntfy_tool and isinstance(ntfy_tool, MCPToolWrapper) and access_token:
+                try:
+                    await ntfy_tool.execute(
+                        taskTitle=message,
+                        taskSummary=message,
+                        ntfyUrl=os.getenv("NTFY_URL", "https://ntfy.informedcrew.com"),
+                        ntfyTopic=os.getenv("NTFY_TOPIC", "wrenvps-notifications"),
+                        accessToken=access_token,
+                    )
+                except Exception as exc:  # pragma: no cover - best-effort notification
+                    logger.error(
+                        "Cron: failed to send ntfy notification for job {}: {}",
+                        job.id,
+                        exc,
+                    )
+
         reminder_note = (
             "[Scheduled Task] Timer finished.\n\n"
             f"Task '{job.name}' has been triggered.\n"
-            f"Scheduled instruction: {job.payload.message}"
+            f"Scheduled instruction: {message}"
         )
 
         # Prevent the agent from scheduling new cron jobs during execution
