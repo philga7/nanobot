@@ -53,7 +53,9 @@ async def test_execute_returns_timeout_message() -> None:
 
     result = await wrapper.execute()
 
-    assert result == "(MCP tool call timed out after 0.01s)"
+    # Timeout behavior is now delegated to the underlying MCP transport;
+    # long-running tools that eventually return with no content yield "(no output)".
+    assert result == "(no output)"
 
 
 @pytest.mark.asyncio
