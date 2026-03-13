@@ -405,8 +405,8 @@ def gateway(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         instance_name=config.agents.defaults.instance_name,
-        search_backend=config.tools.web.search.backend,
-        search_searxng_url=config.tools.web.search.searxng_url or "",
+        search_backend=getattr(config.tools.web.search, "provider", "brave"),
+        search_searxng_url=getattr(config.tools.web.search, "base_url", "") or "",
         search_max_results=config.tools.web.search.max_results,
         memory_sqlite_path=(
             (Path(config.tools.memory.db_path).expanduser() if config.tools.memory.db_path
@@ -638,8 +638,8 @@ def agent(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         instance_name=config.agents.defaults.instance_name,
-        search_backend=config.tools.web.search.backend,
-        search_searxng_url=config.tools.web.search.searxng_url or "",
+        search_backend=getattr(config.tools.web.search, "provider", "brave"),
+        search_searxng_url=getattr(config.tools.web.search, "base_url", "") or "",
         search_max_results=config.tools.web.search.max_results,
         memory_sqlite_path=(
             (Path(config.tools.memory.db_path).expanduser() if config.tools.memory.db_path
