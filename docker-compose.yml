@@ -16,11 +16,13 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1'
-          memory: 1G
+          # Allow more headroom for embedded MCP servers like Memento,
+          # which can use additional memory during vectorization/search.
+          cpus: '2'
+          memory: 4G
         reservations:
-          cpus: '0.25'
-          memory: 256M
+          cpus: '0.5'
+          memory: 512M
 
   bird-api:
     build:
