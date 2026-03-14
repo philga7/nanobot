@@ -13,7 +13,10 @@ always: true
 
 ## Search Past Events
 
-Choose the search method based on file size:
+- **`recall_hindsight`** (when Hindsight is enabled): Semantic and temporal search over long-term memories. Use for natural language queries.
+- **`search_memory`** (when SQLite memory is enabled): Keyword/phrase search over consolidated entries.
+
+For raw HISTORY.md, choose based on file size:
 
 - Small `memory/HISTORY.md`: use `read_file`, then search in-memory
 - Large or long-lived `memory/HISTORY.md`: use the `exec` tool for targeted search

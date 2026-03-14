@@ -27,12 +27,11 @@ You can run multiple nanobot instances with separate configs and data. Use a **c
    nanobot gateway --config ~/.wrenair/config.json
    ```
 
-## MCP servers (Todo, Journaling, Library)
+## MCP servers (Todo, Library)
 
 Configure MCP servers under `tools.mcpServers` in your config. Use **absolute paths** for database paths so they work regardless of process cwd.
 
 - **Todo** (Xczer/todo-mcp-server): `npx -y todo-mcp-server`; set `TODO_DB_PATH` in `env` to e.g. `~/.wrenair/todos.db` (expand to absolute in config).
-- **Memento** (iAchilles/memento): `npx -y @iachilles/memento`; set `MEMENTO_DB_PATH` (or the env var the server expects) to e.g. `~/.wrenair/memento.db`.
 - **Literature / OSINT** (sqlite-literature-management-fastmcp): Python/fastmcp; run from the cloned repo with `uv run` and set `cwd` to the repo path so the server can find its project.
 
 See the example configs in `config.wrenair.example.json` (and `config.wrenvps.example.json`, `config.wrenpro.example.json`) for the exact structure.

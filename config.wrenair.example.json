@@ -55,15 +55,6 @@
         },
         "toolTimeout": 30
       },
-      "memento": {
-        "command": "npx",
-        "args": ["-y", "@iachilles/memento"],
-        "type": "stdio",
-        "env": {
-          "MEMENTO_DB_PATH": "/absolute/path/to/wrenair/memento.db"
-        },
-        "toolTimeout": 30
-      },
       "library": {
         "command": "python",
         "args": ["sqlite-paper-fastmcp-server.py"],

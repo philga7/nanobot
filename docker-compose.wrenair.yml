@@ -13,3 +13,9 @@ services:
     volumes:
       - ~/.wrenair:/root/.wrenair
     command: ["gateway", "--config", "/root/.wrenair/config.json"]
+
+  hindsight:
+    env_file:
+      - .env.wrenair
+    volumes:
+      - ~/.wrenair/hindsight:/home/hindsight/.pg0
