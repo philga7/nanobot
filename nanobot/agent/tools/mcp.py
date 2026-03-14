@@ -41,7 +41,7 @@ class MCPToolWrapper(Tool):
             # Let the underlying MCP transport manage timeouts instead of wrapping
             # the call in asyncio.wait_for, which can cancel the shared session and
             # cause ClosedResourceError on subsequent tool calls for long-running
-            # servers like Memento.
+            # servers that expect persistent local state.
             result = await self._session.call_tool(self._original_name, arguments=kwargs)
         except asyncio.CancelledError:
             # If our task was explicitly cancelled (e.g. user /stop), propagate;

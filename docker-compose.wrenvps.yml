@@ -1,7 +1,6 @@
 ##### Optional override for WrenVPS instance #####
 # Usage: docker compose -f docker-compose.yml -f docker-compose.wrenvps.yml --env-file .env.wrenvps up -d
 # Ensure ~/.wrenvps/config.json exists and:
-#   - configures tools.mcpServers.memento.env.MEMENTO_DB_PATH to /root/.wrenvps/memento.db
 #   - sets tools.web.search.searxngUrl to http://searxng_vps:8080 (or your chosen backend)
 
 services:
@@ -15,6 +14,12 @@ services:
     volumes:
       - ~/.wrenvps:/root/.wrenvps
     command: ["gateway", "--config", "/root/.wrenvps/config.json"]
+
+  hindsight:
+    env_file:
+      - .env.wrenvps
+    volumes:
+      - ~/.wrenvps/hindsight:/home/hindsight/.pg0
 
   # Separate SearXNG instance for WrenVPS to avoid
   # container-name / port conflicts with any existing searxng.

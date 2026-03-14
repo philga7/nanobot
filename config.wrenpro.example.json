@@ -26,13 +26,6 @@
         "type": "stdio",
         "env": { "TODO_DB_PATH": "/absolute/path/to/wrenpro/todos.db" },
         "toolTimeout": 30
-      },
-      "memento": {
-        "command": "npx",
-        "args": ["-y", "@iachilles/memento"],
-        "type": "stdio",
-        "env": { "MEMENTO_DB_PATH": "/absolute/path/to/wrenpro/memento.db" },
-        "toolTimeout": 30
       }
     }
   }

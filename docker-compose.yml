@@ -16,8 +16,7 @@ services:
     deploy:
       resources:
         limits:
-          # Allow more headroom for embedded MCP servers like Memento,
-          # which can use additional memory during vectorization/search.
+          # Allow more headroom for embedded MCP servers and Hindsight memory.
           cpus: '2'
           memory: 4G
         reservations:
@@ -34,6 +33,19 @@ services:
       - "18791:18791"
     environment:
       - PORT=18791
+
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:latest
+    container_name: hindsight
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+      - "9999:9999"
+    volumes:
+      - hindsight-data:/home/hindsight/.pg0
+    environment:
+      - HINDSIGHT_API_HOST=0.0.0.0
+      - HINDSIGHT_API_PORT=8888
 
   searxng:
     image: searxng/searxng:latest
@@ -56,3 +68,4 @@ services:
 
 volumes:
   searxng-data:
+  hindsight-data:

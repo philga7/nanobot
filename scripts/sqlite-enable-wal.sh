@@ -15,7 +15,7 @@ enable_wal() {
   fi
 }
 
-echo "Enabling WAL mode for NanoBot / Memento-related SQLite databases (if present)..."
+echo "Enabling WAL mode for NanoBot-related SQLite databases (if present)..."
 
 # Default single-user NanoBot layout
 enable_wal "${HOME}/.nanobot/data/journal.db"
@@ -23,12 +23,10 @@ enable_wal "${HOME}/.nanobot/data/todos.db"
 enable_wal "${HOME}/.nanobot/data/sources.db"
 
 # WrenAir instance (Docker bind-mounted at ~/.wrenair)
-enable_wal "${HOME}/.wrenair/memento.db"
 enable_wal "${HOME}/.wrenair/todos.db"
 enable_wal "${HOME}/.wrenair/library/sources.db"
 
 # WrenVPS instance (Docker bind-mounted at ~/.wrenvps)
-enable_wal "${HOME}/.wrenvps/memento.db"
 enable_wal "${HOME}/.wrenvps/todos.db"
 enable_wal "${HOME}/.wrenvps/library/sources.db"
 

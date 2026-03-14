@@ -13,3 +13,8 @@ This file documents non-obvious constraints and usage patterns.
 ## cron — Scheduled Reminders
 
 - Please refer to cron skill for usage.
+
+## recall_hindsight — Hindsight Long-term Memory (when enabled)
+
+- Natural language search over retained memories. Complements `search_memory` (SQLite) with richer semantic recall.
+- Use for queries like "What does the user prefer for X?" or "What happened in June?"

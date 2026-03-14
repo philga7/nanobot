@@ -55,15 +55,6 @@
         },
         "toolTimeout": 30
       },
-      "memento": {
-        "command": "npx",
-        "args": ["-y", "@iachilles/memento"],
-        "type": "stdio",
-        "env": {
-          "MEMENTO_DB_PATH": "/absolute/path/to/wrenvps/memento.db"
-        },
-        "toolTimeout": 30
-      },
       "library": {
         "command": "python",
         "args": ["sqlite-paper-fastmcp-server.py"],
@@ -167,15 +158,6 @@
           "NTFY_TOPIC": "wrenair-notifications",
           "NTFY_URL": "https://ntfy.informedcrew.com",
           "NTFY_TOKEN": "YOUR_NTFY_TOKEN"
-        },
-        "toolTimeout": 30
-      },
-      "memento": {
-        "command": "npx",
-        "args": ["-y", "@iachilles/memento"],
-        "type": "stdio",
-        "env": {
-          "MEMENTO_DB_PATH": "/absolute/path/to/wrenair/memento.db"
         },
         "toolTimeout": 30
       },

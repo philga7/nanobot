@@ -1,7 +1,7 @@
 ---
 name: newsroom
 description: Orchestrate a Four-Part AI Newsroom using SearXNG web search, MCP servers (news/library, journaling, todo, ntfy), and NanoBot’s memory for research, triage, and delivery.
-metadata: {"nanobot":{"emoji":"📰","requires":{"skills":["memory","weather","twitter"],"tools":["web_search","web_fetch"],"mcpServers":["library","memento","todo","ntfy","newsPipeline"]}}}
+metadata: {"nanobot":{"emoji":"📰","requires":{"skills":["memory","weather","twitter"],"tools":["web_search","web_fetch"],"mcpServers":["library","todo","ntfy","newsPipeline"]}}}
 ---
 
 # Four-Part AI Newsroom
@@ -77,7 +77,7 @@ Always prefer **config files and library entries** over inventing policy. If a r
 
 **Goal**: Keep a human-readable log of what the newsroom did and why.
 
-Use **journaling MCP (e.g. Memento)** or the SQLite memory search to:
+Use **journaling** and the SQLite memory search (`search_memory`) to:
 
 - After each significant run (especially scheduled jobs), append a **short journal entry**:
   - Include: job name, time, items considered, items promoted, delivery modes used, and any anomalies.
@@ -168,13 +168,11 @@ Keep a clear separation between:
 
 ---
 
-## 7. Memento journaling and batching
+## 7. Memory journaling and batching
 
-When using the Memento journaling MCP for newsroom logs:
+When keeping newsroom logs in memory:
 
-- Prefer **small, frequent journal writes** over a single huge backfill.
-- If you need to write many entries at once (e.g. backfilling a large run), **batch them**:
-  - Group entities into chunks of roughly **10–25 entries per call**.
-  - Call the `mcp_memento_create_entities` tool once per batch and wait for it to complete before sending the next batch.
-- Avoid sending very large payloads in a single MCP call, as that can cause long-running operations that stress the MCP server and its stdio connection.
+- Prefer **small, frequent memory consolidations** (normal Nanobot behavior) over a single huge backfill.
+- Use `search_memory` to query past runs by timeframe, topic, or keyword.
+- Keep entries scoped to a single run or small group of related stories.
 
