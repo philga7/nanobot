@@ -48,6 +48,62 @@ function getSearxngBaseUrl(): string {
   return (process.env.SEARXNG_BASE_URL || "http://searxng:8080").replace(/\/+$/, "");
 }
 
+function getNewsDataDir(): string {
+  const candidate =
+    process.env.NEWS_DATA_DIR ||
+    (existsSync(join(process.cwd(), "data")) ? join(process.cwd(), "data") : null) ||
+    join(getBaseDir(), "news");
+  return candidate.replace(/\/+$/, "");
+}
+
+/** Parse non-empty lines from markdown/text; strip list markers and leading #. */
+function parseLinesFromFile(content: string): string[] {
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*#]\s*|\s*#+\s*$|^\d+\.\s*/g, "").trim())
+    .filter((line) => line.length > 0);
+}
+
+async function loadPriorityTopics(): Promise<string[]> {
+  const dataDir = getNewsDataDir();
+  const path = join(dataDir, "priority-topics.md");
+  if (!existsSync(path)) return [];
+  try {
+    const raw = await readFile(path, "utf-8");
+    return parseLinesFromFile(raw);
+  } catch {
+    return [];
+  }
+}
+
+async function loadMajorEvents(): Promise<string[]> {
+  const dataDir = getNewsDataDir();
+  const path = join(dataDir, "major-events.md");
+  if (!existsSync(path)) return [];
+  try {
+    const raw = await readFile(path, "utf-8");
+    return parseLinesFromFile(raw).map((s) => s.toLowerCase());
+  } catch {
+    return [];
+  }
+}
+
+async function checkCFPBadge(url: string): Promise<{ breaking: boolean; live: boolean }> {
+  if (!url.includes("citizenfreepress.com")) {
+    return { breaking: false, live: false };
+  }
+  try {
+    const res = await fetch(url);
+    const html = await res.text();
+    const breaking =
+      html.includes("breaking-badge") || html.includes("BREAKING");
+    const live = html.includes("live-badge") || html.includes("LIVE");
+    return { breaking, live };
+  } catch {
+    return { breaking: false, live: false };
+  }
+}
+
 async function ensureDir(path: string): Promise<void> {
   if (!existsSync(path)) {
     await mkdir(path, { recursive: true });
@@ -80,6 +136,11 @@ function nowIso(): string {
 }
 
 async function searxngSearch(query: string, maxItems: number): Promise<NewsItem[]> {
+  const [priorityTopics, majorEvents] = await Promise.all([
+    loadPriorityTopics(),
+    loadMajorEvents()
+  ]);
+
   const baseUrl = getSearxngBaseUrl();
   const url = `${baseUrl}/search?q=${encodeURIComponent(
     query
@@ -91,10 +152,13 @@ async function searxngSearch(query: string, maxItems: number): Promise<NewsItem[
   }
   const data: any = await res.json();
   const results: any[] = Array.isArray(data.results) ? data.results : [];
+  const sliced = results.slice(0, maxItems);
+  const items: NewsItem[] = [];
 
-  return results.slice(0, maxItems).map((r, idx) => {
+  for (let idx = 0; idx < sliced.length; idx++) {
+    const r = sliced[idx];
     const title = String(r.title ?? "");
-    const url = String(r.url ?? "");
+    const itemUrl = String(r.url ?? "");
     const snippet = String(r.content ?? r.snippet ?? "");
 
     const reasons: string[] = [];
@@ -110,22 +174,46 @@ async function searxngSearch(query: string, maxItems: number): Promise<NewsItem[
       score += 1.5;
       reasons.push("Title contains 'LIVE'");
     }
+    if (majorEvents.length > 0 && majorEvents.some((k) => title.toLowerCase().includes(k))) {
+      score += 2;
+      reasons.push("Major event keyword");
+    }
+    if (priorityTopics.length > 0 && priorityTopics.some((t) => title.includes(t) || snippet.includes(t))) {
+      score *= 1.5;
+      reasons.push("Priority topic");
+    }
 
-    if (!title || !url) {
+    if (!title || !itemUrl) {
       flags.push("incomplete");
     }
 
-    return {
+    const item: NewsItem = {
       title,
-      url,
+      url: itemUrl,
       snippet,
       score,
       reasons,
       flags,
       seenBefore: false,
-      source: "searxng" as const
+      source: "searxng"
     };
-  });
+
+    if (itemUrl.includes("citizenfreepress.com")) {
+      const badges = await checkCFPBadge(itemUrl);
+      if (badges.breaking) {
+        item.score += 4;
+        item.reasons.push("CFP BREAKING badge");
+      }
+      if (badges.live) {
+        item.score += 3;
+        item.reasons.push("CFP LIVE badge");
+      }
+    }
+
+    items.push(item);
+  }
+
+  return items;
 }
 
 function chooseDeliveryPolicy(jobId: NewsJobId): DeliveryPolicy {
