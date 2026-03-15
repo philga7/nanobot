@@ -64,6 +64,8 @@ Then start with:
 docker compose -f docker-compose.yml -f docker-compose.wrenvps.yml --env-file .env.wrenvps up -d
 ```
 
+**Ports:** External access (e.g. `curl` from outside the VPS) uses **8082**. Container-to-container (e.g. nanobot-gateway → SearXNG) uses **searxng_vps:8080**.
+
 ## CLI (interactive) with Docker
 
 ```bash

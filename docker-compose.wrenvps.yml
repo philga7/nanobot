@@ -30,6 +30,7 @@ services:
     container_name: searxng_vps
     env_file:
       - .env.wrenvps
+    # Host 8082 = external access (e.g. curl from outside). Container-to-container = searxng_vps:8080.
     ports:
       - "8082:8080"
     volumes:
