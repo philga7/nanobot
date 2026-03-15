@@ -28,6 +28,8 @@ interface NewsItem {
 interface HistoryEntry {
   lastSeen: string;
   jobId: string;
+  /** Channel names this URL was posted to (e.g. #breaking-news, #intel-signals). Merged across jobs. */
+  channels?: string[];
 }
 
 interface HistoryStore {
@@ -189,11 +191,21 @@ async function runBreakingNewsSweep(
 
   const deduped = Array.from(byUrl.values()).sort((a, b) => b.score - a.score);
 
+  const policy = chooseDeliveryPolicy("breaking-news-sweep");
+  const jobChannels = policy.channels ?? [];
   const updatedHistory: HistoryStore = { ...history };
   const ts = nowIso();
   for (const item of deduped) {
     if (!item.url) continue;
-    updatedHistory[item.url] = { lastSeen: ts, jobId: "breaking-news-sweep" };
+    const existing = history[item.url];
+    const channels = existing?.channels?.length
+      ? [...new Set([...existing.channels, ...jobChannels])]
+      : jobChannels;
+    updatedHistory[item.url] = {
+      lastSeen: ts,
+      jobId: "breaking-news-sweep",
+      channels: channels.length ? channels : undefined
+    };
   }
 
   return { items: deduped, updatedHistory };
@@ -248,11 +260,21 @@ async function runIntelSignalsSweep(
 
   const deduped = Array.from(byUrl.values()).sort((a, b) => b.score - a.score);
 
+  const policy = chooseDeliveryPolicy("intel-signals-sweep");
+  const jobChannels = policy.channels ?? [];
   const updatedHistory: HistoryStore = { ...history };
   const ts = nowIso();
   for (const item of deduped) {
     if (!item.url) continue;
-    updatedHistory[item.url] = { lastSeen: ts, jobId: "intel-signals-sweep" };
+    const existing = history[item.url];
+    const channels = existing?.channels?.length
+      ? [...new Set([...existing.channels, ...jobChannels])]
+      : jobChannels;
+    updatedHistory[item.url] = {
+      lastSeen: ts,
+      jobId: "intel-signals-sweep",
+      channels: channels.length ? channels : undefined
+    };
   }
 
   return { items: deduped, updatedHistory };
@@ -381,13 +403,18 @@ async function handleGetHistoryStatus(args: NewsGetHistoryStatusArgs) {
   if (args.summary) {
     const total = Object.keys(history).length;
     const byJob: Record<string, number> = {};
+    const byChannel: Record<string, number> = {};
     for (const entry of Object.values(history)) {
       const jobId = entry.jobId || "(unknown)";
       byJob[jobId] = (byJob[jobId] || 0) + 1;
+      for (const ch of entry.channels ?? []) {
+        byChannel[ch] = (byChannel[ch] || 0) + 1;
+      }
     }
     return {
       total,
-      byJob
+      byJob,
+      byChannel
     };
   }
 
