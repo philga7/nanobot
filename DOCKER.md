@@ -44,6 +44,26 @@ To run a specific instance (e.g. WrenAir) with its own config and workspace:
 
 The WrenAir override mounts `~/.wrenair` and runs the gateway with `--config /root/.wrenair/config.json`.
 
+## WrenVPS (SearXNG config on host)
+
+When using the WrenVPS override, SearXNG config is stored on the VPS at **`~/.wrenvps/searxng/`** (e.g. `settings.yml`). Before first run:
+
+```bash
+mkdir -p ~/.wrenvps/searxng
+```
+
+Copy the repo’s default config (change `secret_key` for production):
+
+```bash
+cp searxng/settings.yml ~/.wrenvps/searxng/settings.yml
+```
+
+Then start with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.wrenvps.yml --env-file .env.wrenvps up -d
+```
+
 ## CLI (interactive) with Docker
 
 ```bash

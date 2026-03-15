@@ -1,7 +1,9 @@
 ##### Optional override for WrenVPS instance #####
 # Usage: docker compose -f docker-compose.yml -f docker-compose.wrenvps.yml --env-file .env.wrenvps up -d
 # Ensure ~/.wrenvps/config.json exists and:
-#   - sets tools.web.search.searxngUrl to http://searxng_vps:8080 (or your chosen backend)
+#   - sets tools.web.search.provider to "searxng" and baseUrl to http://searxng_vps:8080
+# SearXNG config on the VPS: ~/.wrenvps/searxng/ (e.g. settings.yml). Create it before first run:
+#   mkdir -p ~/.wrenvps/searxng
 
 services:
   bird-api:
@@ -23,9 +25,12 @@ services:
 
   # Separate SearXNG instance for WrenVPS to avoid
   # container-name / port conflicts with any existing searxng.
+  # Config is stored on the host at ~/.wrenvps/searxng/ (e.g. settings.yml).
   searxng:
     container_name: searxng_vps
     env_file:
       - .env.wrenvps
     ports:
       - "8082:8080"
+    volumes:
+      - ~/.wrenvps/searxng:/etc/searxng

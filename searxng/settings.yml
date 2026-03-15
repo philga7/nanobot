@@ -1,0 +1,11 @@
+# Minimal SearXNG settings for WrenVPS (and similar deployments).
+# Inherits all other defaults from SearXNG.
+# See https://docs.searxng.org/admin/settings/settings.html#settings-use-default-settings
+use_default_settings: true
+
+server:
+  # CHANGE THIS for any public or production use (e.g. openssl rand -hex 32)
+  secret_key: "ultrasecretkey"
+  # Set true if the instance is reachable on the internet
+  limiter: false
+  image_proxy: true
