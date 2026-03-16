@@ -1,26 +1,16 @@
 # Optional override for WrenAir instance.
 # Usage: docker compose -f docker-compose.yml -f docker-compose.wrenair.yml up -d
-# Ensure ~/.wrenair/config.json exists and sets tools.web.search.searxngUrl to http://searxng:8080
+# This override keeps SearXNG containerized for the WrenAir instance while
+# running the nanobot gateway natively via launchd on the host.
 
 services:
-  bird-api:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng_wrenair
     env_file:
       - .env.wrenair
-
-  nanobot-gateway:
-    env_file:
-      - .env.wrenair
+    # Host 8083 = external access (e.g. curl from the Mac). Container-to-container = searxng_wrenair:8080.
+    ports:
+      - "8083:8080"
     volumes:
-      - ~/.wrenair:/root/.wrenair
-      # Persist cron jobs across rebuilds
-      - wrenair-cron:/root/.wrenair/cron
-    command: ["gateway", "--config", "/root/.wrenair/config.json"]
-
-  hindsight:
-    env_file:
-      - .env.wrenair
-    volumes:
-      - ~/.wrenair/hindsight:/home/hindsight/.pg0
-
-volumes:
-  wrenair-cron:
+      - ~/.wrenair/searxng:/etc/searxng

@@ -13,7 +13,6 @@ always: true
 
 ## Search Past Events
 
-- **`recall_hindsight`** (when Hindsight is enabled): Semantic and temporal search over long-term memories. Use for natural language queries.
 - **`search_memory`** (when SQLite memory is enabled): Keyword/phrase search over consolidated entries.
 
 For raw HISTORY.md, choose based on file size:
