@@ -12,6 +12,8 @@ services:
       - .env.wrenair
     volumes:
       - ~/.wrenair:/root/.wrenair
+      # Persist cron jobs across rebuilds
+      - wrenair-cron:/root/.wrenair/cron
     command: ["gateway", "--config", "/root/.wrenair/config.json"]
 
   hindsight:
@@ -19,3 +21,6 @@ services:
       - .env.wrenair
     volumes:
       - ~/.wrenair/hindsight:/home/hindsight/.pg0
+
+volumes:
+  wrenair-cron:

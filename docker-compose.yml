@@ -4,6 +4,8 @@ x-common-config: &common-config
     dockerfile: Dockerfile
   volumes:
     - ~/.nanobot:/root/.nanobot
+    # Persist cron jobs across rebuilds (same pattern as searxng-data, hindsight-data)
+    - nanobot-cron:/root/.nanobot/cron
 
 services:
   nanobot-gateway:
@@ -69,3 +71,4 @@ services:
 volumes:
   searxng-data:
   hindsight-data:
+  nanobot-cron:

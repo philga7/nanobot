@@ -11,6 +11,7 @@ You can run multiple nanobot instances with separate configs and data. Use a **c
 | WrenPro  | `~/.wrenpro/config.json` | `~/.wrenpro/`    |
 
 - **Data dir** is derived from the config file location (parent of the config file). All runtime data (cron, logs, media, workspace) lives under that directory when you use `--config`.
+- **Cron jobs**: When running via Docker Compose, cron is stored in a dedicated named volume (e.g. `nanobot-cron`, `wrenair-cron`, `wrenvps-cron`) so jobs persist across image rebuilds. Same pattern as `searxng-data` and `hindsight-data`.
 - **Workspace** is set in config (`agents.defaults.workspace`), e.g. `~/.wrenair/workspace`, so each instance has its own memory, AGENTS.md, skills, and HEARTBEAT.md.
 
 ## Setup
