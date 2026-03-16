@@ -214,8 +214,8 @@ class LiteLLMProvider(LLMProvider):
 
         Gemini requires every array schema to have an inner ``items`` definition.
         Some MCP servers (for example ones using complex Tuple-annotated types)
-        can emit JSON Schema fragments that use ``prefixItems`` or nested
-        arrays without populating ``items``. This normalizes those shapes.
+        can emit JSON Schema fragments that use ``prefixItems``, ``anyOf``/``any_of``,
+        or nested arrays without populating ``items``. This normalizes those shapes.
         """
 
         def _sanitize_node(node: Any) -> Any:
@@ -223,6 +223,11 @@ class LiteLLMProvider(LLMProvider):
                 return [_sanitize_node(item) for item in node]
             if not isinstance(node, dict):
                 return node
+
+            # Handle union-like constructs explicitly so array branches get fixed.
+            for union_key in ("anyOf", "any_of", "oneOf", "allOf"):
+                if union_key in node and isinstance(node[union_key], list):
+                    node[union_key] = [_sanitize_node(opt) for opt in node[union_key]]
 
             # First, recurse into children so nested arrays are handled.
             for key, value in list(node.items()):
