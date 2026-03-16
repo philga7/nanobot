@@ -1,22 +1,19 @@
-# Docker: one-command stand up / tear down
+# Docker: infra-only stand up / tear down (SearXNG)
 
-Use Docker Compose to run the nanobot gateway and SearXNG together.
+Use Docker Compose to run **SearXNG** as an infra dependency, while running the
+nanobot gateway natively on the host (see [INSTANCES.md](INSTANCES.md) for WrenAir/WrenVPS).
 
-## Stand up
+## Stand up SearXNG
 
 ```bash
 docker compose up -d
 ```
 
-This starts:
+When used with the WrenAir/WrenVPS overrides below, this starts a dedicated SearXNG
+instance for that host.
 
-- **nanobot-gateway** on port 18790 (config and data from `~/.nanobot` on the host).
-- **searxng** on port 8080 (web search; no API key).
-
-Create a config at `~/.nanobot/config.json` (or use `nanobot onboard`) and set:
-
-- `tools.web.search.backend`: `"searxng"`
-- `tools.web.search.searxngUrl`: `"http://searxng:8080"` (when using this compose; use `http://localhost:8080` if running the gateway on the host and SearXNG in Docker).
+Point your instance config (for example `~/.wrenvps/config.json` or `~/.wrenair/config.json`)
+at Hindsight via the host or Docker network URL you use in production.
 
 ## Tear down
 
@@ -24,52 +21,37 @@ Create a config at `~/.nanobot/config.json` (or use `nanobot onboard`) and set:
 docker compose down
 ```
 
-To remove SearXNG data as well:
+To remove Hindsight data as well:
 
 ```bash
 docker compose down -v
 ```
 
-## WrenAir (or other instance) in Docker
+## WrenAir / WrenVPS overrides
 
-To run a specific instance (e.g. WrenAir) with its own config and workspace:
+To run SearXNG with per-instance data directories, use the overrides:
 
-1. Create `~/.wrenair/config.json` (see [INSTANCES.md](INSTANCES.md) and `config.wrenair.example.json`).
-2. In that config set `tools.web.search.searxngUrl` to `http://searxng:8080`.
-3. Start with the override:
+- **WrenAir**:
 
-   ```bash
-   docker compose -f docker-compose.yml -f docker-compose.wrenair.yml up -d
-   ```
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.wrenair.yml up -d
+  ```
 
-The WrenAir override mounts `~/.wrenair` and runs the gateway with `--config /root/.wrenair/config.json`.
+  This stores SearXNG config under `~/.wrenair/searxng/` on the host. Inside Docker,
+  other containers would talk to SearXNG at `http://searxng_wrenair:8080`; when running
+  the gateway natively on macOS, use `http://localhost:8083` in your config.
 
-## WrenVPS (SearXNG config on host)
+- **WrenVPS**:
 
-When using the WrenVPS override, SearXNG config is stored on the VPS at **`~/.wrenvps/searxng/`** (e.g. `settings.yml`). Before first run:
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.wrenvps.yml --env-file .env.wrenvps up -d
+  ```
 
-```bash
-mkdir -p ~/.wrenvps/searxng
-```
+  This stores SearXNG config under `~/.wrenvps/searxng/` on the host. Inside Docker,
+  other containers would talk to SearXNG at `http://searxng_vps:8080`; when running the
+  gateway natively on the VPS, use `http://localhost:8082` in your config.
 
-Copy the repo’s default config (change `secret_key` for production):
-
-```bash
-cp searxng/settings.yml ~/.wrenvps/searxng/settings.yml
-```
-
-Then start with:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.wrenvps.yml --env-file .env.wrenvps up -d
-```
-
-**Ports:** External access (e.g. `curl` from outside the VPS) uses **8082**. Container-to-container (e.g. nanobot-gateway → SearXNG) uses **searxng_vps:8080**.
-
-## CLI (interactive) with Docker
-
-```bash
-docker compose --profile cli run --rm nanobot-cli agent
-```
-
-Uses the same image and `~/.nanobot` volume; ensure config exists first.
+In both cases, the nanobot gateway itself is expected to run natively (systemd on Ubuntu,
+launchd on macOS), and to connect to SearXNG/ntfy services as configured in your
+instance `config.json`. Long-term memory is handled via the built-in markdown/SQLite
+memory plus any external Mem0 instance you configure separately (see `docs/MEM0.md`).

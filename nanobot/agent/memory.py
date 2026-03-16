@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, Callable
 from loguru import logger
 
 from nanobot.utils.helpers import ensure_dir, estimate_message_tokens, estimate_prompt_tokens_chain
-from nanobot.memory.hindsight_client import retain_memory as hindsight_retain
 
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
@@ -198,11 +197,6 @@ class MemoryStore:
                     sqlite_store.insert(entry, "consolidation")
                 except Exception as e:
                     logger.debug("SQLite memory insert skipped: {}", e)
-
-            try:
-                await hindsight_retain(content=entry, context="consolidation")
-            except Exception:
-                logger.debug("Hindsight retain skipped", exc_info=True)
 
             self._consecutive_failures = 0
             logger.info("Memory consolidation done for {} messages", len(messages))

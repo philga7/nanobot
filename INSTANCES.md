@@ -11,7 +11,7 @@ You can run multiple nanobot instances with separate configs and data. Use a **c
 | WrenPro  | `~/.wrenpro/config.json` | `~/.wrenpro/`    |
 
 - **Data dir** is derived from the config file location (parent of the config file). All runtime data (cron, logs, media, workspace) lives under that directory when you use `--config`.
-- **Cron jobs**: When running via Docker Compose, cron is stored in a dedicated named volume (e.g. `nanobot-cron`, `wrenair-cron`, `wrenvps-cron`) so jobs persist across image rebuilds. Same pattern as `searxng-data` and `hindsight-data`.
+- **Cron jobs**: By default, cron lives under the instance data dir (for example `~/.wrenair/cron`, `~/.wrenvps/cron`) and is read by the gateway process. Earlier Docker-based workflows used dedicated named volumes (e.g. `nanobot-cron`, `wrenair-cron`, `wrenvps-cron`) so jobs persisted across image rebuilds; for native services, jobs now persist directly on the host.
 - **Workspace** is set in config (`agents.defaults.workspace`), e.g. `~/.wrenair/workspace`, so each instance has its own memory, AGENTS.md, skills, and HEARTBEAT.md.
 
 ## Setup
@@ -27,6 +27,114 @@ You can run multiple nanobot instances with separate configs and data. Use a **c
    ```bash
    nanobot gateway --config ~/.wrenair/config.json
    ```
+
+---
+
+## Native services (Ubuntu WrenVPS)
+
+For WrenVPS, run the gateway as a system-wide `systemd` service, while keeping Hindsight in Docker via `docker-compose.wrenvps.yml`.
+
+1. Create a virtualenv and install nanobot:
+
+   ```bash
+   cd /opt/nanobot-vps
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -e /Users/philipclapper/workspace/nanobot
+   ```
+
+2. Create `/etc/systemd/system/nanobot-gateway-wrenvps.service`:
+
+   ```ini
+   [Unit]
+   Description=Nanobot Gateway (WrenVPS)
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=philipclapper
+   WorkingDirectory=/opt/nanobot-vps
+   EnvironmentFile=/home/philipclapper/.env.wrenvps
+   ExecStart=/opt/nanobot-vps/venv/bin/nanobot gateway --config /home/philipclapper/.wrenvps/config.json
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+3. Enable and start:
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now nanobot-gateway-wrenvps.service
+   ```
+
+The gateway now:
+- Reads config from `~/.wrenvps/config.json`.
+- Uses cron definitions from `~/.wrenvps/cron/`.
+- Talks to Hindsight via the Docker service (see `docker-compose.wrenvps.yml`), and to external SearXNG / ntfy according to your config.
+
+---
+
+## Native services (macOS WrenAir)
+
+For WrenAir, run the gateway as a `launchd` user agent.
+
+1. Create a virtualenv and install nanobot:
+
+   ```bash
+   cd ~/dev/nanobot-wrenair
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -e /Users/philipclapper/workspace/nanobot
+   ```
+
+2. Create `~/Library/LaunchAgents/ai.nanobot.gateway.wrenair.plist`:
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+     <key>Label</key>
+     <string>ai.nanobot.gateway.wrenair</string>
+     <key>ProgramArguments</key>
+     <array>
+       <string>/Users/philipclapper/dev/nanobot-wrenair/venv/bin/nanobot</string>
+       <string>gateway</string>
+       <string>--config</string>
+       <string>/Users/philipclapper/.wrenair/config.json</string>
+     </array>
+     <key>WorkingDirectory</key>
+     <string>/Users/philipclapper/dev/nanobot-wrenair</string>
+     <key>EnvironmentVariables</key>
+     <dict>
+       <key>DOTENV_FILE</key>
+       <string>/Users/philipclapper/.env.wrenair</string>
+     </dict>
+     <key>RunAtLoad</key>
+     <true/>
+     <key>KeepAlive</key>
+     <true/>
+     <key>StandardOutPath</key>
+     <string>/Users/philipclapper/Library/Logs/nanobot-gateway-wrenair.log</string>
+     <key>StandardErrorPath</key>
+     <string>/Users/philipclapper/Library/Logs/nanobot-gateway-wrenair.err</string>
+   </dict>
+   </plist>
+   ```
+
+3. Load and start:
+
+   ```bash
+   launchctl load -w ~/Library/LaunchAgents/ai.nanobot.gateway.wrenair.plist
+   ```
+
+The gateway now:
+- Reads config from `~/.wrenair/config.json`.
+- Uses cron definitions from `~/.wrenair/cron/`.
+- Can talk either to local Hindsight (via `docker-compose.wrenair.yml`) or to the VPS Hindsight endpoint, and to external SearXNG / ntfy services.
 
 ## MCP servers (Todo, Library)
 

@@ -24,7 +24,6 @@ from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.agent.memory_sqlite import MemorySqliteStore, SearchMemoryTool
-from nanobot.agent.tools.hindsight import HindsightRecallTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
@@ -147,8 +146,6 @@ class AgentLoop:
             self.tools.register(
                 SearchMemoryTool(self._memory_sqlite_store, self._memory_max_search_results)
             )
-        if os.getenv("HINDSIGHT_API_URL", "").strip():
-            self.tools.register(HindsightRecallTool())
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
