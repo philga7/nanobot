@@ -207,6 +207,63 @@ class LiteLLMProvider(LLMProvider):
                 clean["tool_call_id"] = map_id(clean["tool_call_id"])
         return sanitized
 
+    @staticmethod
+    def _sanitize_tool_schemas(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Recursively sanitize tool schemas for strict providers like Gemini.
+
+        Gemini requires every array schema to have an inner ``items`` definition.
+        Some MCP servers (for example ones using complex Tuple-annotated types)
+        can emit JSON Schema fragments that use ``prefixItems``, ``anyOf``/``any_of``,
+        or nested arrays without populating ``items``. This normalizes those shapes.
+        """
+
+        def _sanitize_node(node: Any) -> Any:
+            if isinstance(node, list):
+                return [_sanitize_node(item) for item in node]
+            if not isinstance(node, dict):
+                return node
+
+            # Handle union-like constructs explicitly so array branches get fixed.
+            for union_key in ("anyOf", "any_of", "oneOf", "allOf"):
+                if union_key in node and isinstance(node[union_key], list):
+                    node[union_key] = [_sanitize_node(opt) for opt in node[union_key]]
+
+            # First, recurse into children so nested arrays are handled.
+            for key, value in list(node.items()):
+                node[key] = _sanitize_node(value)
+
+            if node.get("type") == "array":
+                # If there is no items schema at all, infer or default it.
+                if "items" not in node:
+                    prefix_items = node.get("prefixItems")
+                    if isinstance(prefix_items, list) and prefix_items:
+                        # Use the first prefix item as a reasonable element schema.
+                        node["items"] = prefix_items[0]
+                    else:
+                        # Conservative fallback: string items.
+                        node["items"] = {"type": "string"}
+
+                # Ensure the items schema itself is well-formed enough for Gemini.
+                if isinstance(node.get("items"), dict):
+                    item_schema = node["items"]
+                    # If the item schema has no explicit type (common with Any/tuple-derived
+                    # schemas), default it so Gemini does not reject the missing field.
+                    if "type" not in item_schema and not any(
+                        key in item_schema for key in ("anyOf", "any_of", "oneOf", "allOf")
+                    ):
+                        item_schema["type"] = "string"
+                        node["items"] = item_schema
+
+                # Some generators may produce an array-of-arrays without fully
+                # specifying the inner items shape; ensure nested arrays are fixed.
+                if isinstance(node.get("items"), dict) and node["items"].get("type") == "array":
+                    node["items"] = _sanitize_node(node["items"])
+
+            return node
+
+        return [_sanitize_node(tool) for tool in tools] if tools else tools
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -274,7 +331,7 @@ class LiteLLMProvider(LLMProvider):
             kwargs["drop_params"] = True
         
         if tools:
-            kwargs["tools"] = tools
+            kwargs["tools"] = self._sanitize_tool_schemas(tools)
             kwargs["tool_choice"] = tool_choice or "auto"
 
         try:
