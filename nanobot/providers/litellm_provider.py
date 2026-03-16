@@ -244,6 +244,17 @@ class LiteLLMProvider(LLMProvider):
                         # Conservative fallback: string items.
                         node["items"] = {"type": "string"}
 
+                # Ensure the items schema itself is well-formed enough for Gemini.
+                if isinstance(node.get("items"), dict):
+                    item_schema = node["items"]
+                    # If the item schema has no explicit type (common with Any/tuple-derived
+                    # schemas), default it so Gemini does not reject the missing field.
+                    if "type" not in item_schema and not any(
+                        key in item_schema for key in ("anyOf", "any_of", "oneOf", "allOf")
+                    ):
+                        item_schema["type"] = "string"
+                        node["items"] = item_schema
+
                 # Some generators may produce an array-of-arrays without fully
                 # specifying the inner items shape; ensure nested arrays are fixed.
                 if isinstance(node.get("items"), dict) and node["items"].get("type") == "array":
