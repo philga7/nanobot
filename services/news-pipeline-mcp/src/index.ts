@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import os from "node:os";
 
 import { Server, StdioServerTransport } from "@modelcontextprotocol/server";
 
@@ -22,7 +23,7 @@ interface NewsItem {
   reasons: string[];
   flags: string[];
   seenBefore: boolean;
-  source: "searxng";
+  source: "searxng" | "bird" | "system";
 }
 
 interface HistoryEntry {
@@ -48,6 +49,26 @@ function getSearxngBaseUrl(): string {
   return (process.env.SEARXNG_BASE_URL || "http://searxng:8080").replace(/\/+$/, "");
 }
 
+function getWrenNewsDir(): string {
+  const homeDir = process.env.HOME || os.homedir();
+  const defaultDir = join(homeDir, ".wrenvps", "news-pipeline");
+  return (process.env.WRENVPS_NEWS_DIR || defaultDir).replace(/\/+$/, "");
+}
+
+const FILE_PRIORITY_TOPICS = "priority-topics.md";
+const FILE_GEORGIA_PRIORITY = "georgia-priority.md";
+const FILE_GEORGIA_SOURCES = "georgia-sources.md";
+const FILE_STANDARD_SOURCES = "standard-sources.md";
+const FILE_METALS_BASELINE = "metals-baseline.json";
+
+const BIRD_API_BASE_URL =
+  (process.env.BIRD_API_BASE_URL || "http://localhost:18791").replace(/\/+$/, "");
+const BIRD_API_TIMELINE_PATH = "/timeline";
+
+const GOLD_API_BASE_URL =
+  (process.env.GOLD_API_BASE_URL || "https://gold-api.com").replace(/\/+$/, "");
+const GOLD_API_ASSETS_PATH = "/assets";
+
 function getNewsDataDir(): string {
   const candidate =
     process.env.NEWS_DATA_DIR ||
@@ -66,7 +87,7 @@ function parseLinesFromFile(content: string): string[] {
 
 async function loadPriorityTopics(): Promise<string[]> {
   const dataDir = getNewsDataDir();
-  const path = join(dataDir, "priority-topics.md");
+  const path = join(dataDir, FILE_PRIORITY_TOPICS);
   if (!existsSync(path)) return [];
   try {
     const raw = await readFile(path, "utf-8");
@@ -86,6 +107,216 @@ async function loadMajorEvents(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+async function loadGeorgiaPriorityTopics(): Promise<string[]> {
+  const dir = getWrenNewsDir();
+  const path = join(dir, FILE_GEORGIA_PRIORITY);
+  if (!existsSync(path)) return [];
+  try {
+    const raw = await readFile(path, "utf-8");
+    return parseLinesFromFile(raw);
+  } catch {
+    return [];
+  }
+}
+
+async function loadGeorgiaSources(): Promise<string[]> {
+  const dir = getWrenNewsDir();
+  const georgiaPath = join(dir, FILE_GEORGIA_SOURCES);
+  const standardPath = join(dir, FILE_STANDARD_SOURCES);
+  const handles: string[] = [];
+
+  if (existsSync(georgiaPath)) {
+    try {
+      const raw = await readFile(georgiaPath, "utf-8");
+      handles.push(...parseLinesFromFile(raw));
+    } catch {
+      // ignore
+    }
+  }
+
+  if (existsSync(standardPath)) {
+    try {
+      const raw = await readFile(standardPath, "utf-8");
+      handles.push(...parseLinesFromFile(raw));
+    } catch {
+      // ignore
+    }
+  }
+
+  return Array.from(new Set(handles));
+}
+
+function isGeorgiaTopicText(
+  title: string,
+  snippet: string,
+  georgiaTopics: string[]
+): boolean {
+  if (georgiaTopics.length === 0) return false;
+  const haystack = `${title}\n${snippet}`;
+  return georgiaTopics.some((topic) => {
+    if (!topic) return false;
+    try {
+      const re = new RegExp(topic, "i");
+      return re.test(haystack);
+    } catch {
+      return haystack.toLowerCase().includes(topic.toLowerCase());
+    }
+  });
+}
+
+async function isGeorgiaTopic(
+  title: string,
+  snippet: string
+): Promise<boolean> {
+  const georgiaTopics = await loadGeorgiaPriorityTopics();
+  return isGeorgiaTopicText(title, snippet, georgiaTopics);
+}
+
+async function fetchBirdTimelines(): Promise<NewsItem[]> {
+  const handles = await loadGeorgiaSources();
+  if (handles.length === 0) {
+    return [];
+  }
+
+  const limited = handles.slice(0, 10);
+  const items: NewsItem[] = [];
+
+  for (const handle of limited) {
+    const url = `${BIRD_API_BASE_URL}${BIRD_API_TIMELINE_PATH}?handle=${encodeURIComponent(
+      handle
+    )}`;
+    try {
+      const res = await fetch(url, { method: "GET" });
+      if (!res.ok) continue;
+      const body: any = await res.json();
+      const tweets: any[] = Array.isArray(body?.tweets) ? body.tweets : [];
+      for (const tweet of tweets) {
+        const text = String(tweet.text ?? "");
+        const tweetUrl = String(tweet.url ?? "");
+        const { score, reasons, flags } = await parseTweetScore(text);
+        items.push({
+          title: text.slice(0, 120),
+          url: tweetUrl,
+          snippet: text,
+          score,
+          reasons,
+          flags,
+          seenBefore: false,
+          source: "bird"
+        });
+      }
+    } catch {
+      // best-effort; skip failures
+      continue;
+    }
+  }
+
+  return items;
+}
+
+async function parseTweetScore(
+  text: string
+): Promise<{ score: number; reasons: string[]; flags: string[] }> {
+  const [priorityTopics, majorEvents] = await Promise.all([
+    loadPriorityTopics(),
+    loadMajorEvents()
+  ]);
+
+  const reasons: string[] = [];
+  const flags: string[] = [];
+  let score = 5;
+
+  const upper = text.toUpperCase();
+  if (upper.includes("BREAKING")) {
+    score += 3;
+    reasons.push("Tweet contains 'BREAKING'");
+  }
+  if (upper.includes("LIVE")) {
+    score += 1.5;
+    reasons.push("Tweet contains 'LIVE'");
+  }
+
+  if (
+    majorEvents.length > 0 &&
+    majorEvents.some((k) => text.toLowerCase().includes(k))
+  ) {
+    score += 2;
+    reasons.push("Major event keyword (tweet)");
+  }
+
+  if (
+    priorityTopics.length > 0 &&
+    priorityTopics.some((t) => text.includes(t))
+  ) {
+    score *= 1.5;
+    reasons.push("Priority topic (tweet)");
+  }
+
+  if (!text.trim()) {
+    flags.push("incomplete");
+  }
+
+  return { score, reasons, flags };
+}
+
+type MetalsBaseline = Record<string, number>;
+
+type MetalsDelta = {
+  symbol: string;
+  baseline: number;
+  current: number;
+  changePct: number;
+};
+
+async function loadMetalsBaseline(): Promise<MetalsBaseline | null> {
+  const dir = getWrenNewsDir();
+  const path = join(dir, FILE_METALS_BASELINE);
+  if (!existsSync(path)) return null;
+  try {
+    const raw = await readFile(path, "utf-8");
+    return JSON.parse(raw) as MetalsBaseline;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCurrentMetals(): Promise<MetalsBaseline | null> {
+  const url = `${GOLD_API_BASE_URL}${GOLD_API_ASSETS_PATH}`;
+  try {
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) return null;
+    const text = await res.text();
+    // Placeholder: callers can refine this to parse real JSON when wiring the API.
+    // For now, we do not attempt to parse HTML; return null so callers treat it as no-change.
+    void text;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function checkMetalsChange(): Promise<{
+  alert: boolean;
+  deltas: MetalsDelta[];
+}> {
+  const baseline = await loadMetalsBaseline();
+  const current = await fetchCurrentMetals();
+  if (!baseline || !current) {
+    return { alert: false, deltas: [] };
+  }
+
+  const deltas: MetalsDelta[] = [];
+  for (const [symbol, basePrice] of Object.entries(baseline)) {
+    const cur = current[symbol];
+    if (typeof cur !== "number" || basePrice === 0) continue;
+    const changePct = ((cur - basePrice) / basePrice) * 100;
+    deltas.push({ symbol, baseline: basePrice, current: cur, changePct });
+  }
+
+  const alert = deltas.some((d) => Math.abs(d.changePct) >= 5);
+  return { alert, deltas };
 }
 
 async function checkCFPBadge(url: string): Promise<{ breaking: boolean; live: boolean }> {
@@ -136,9 +367,10 @@ function nowIso(): string {
 }
 
 async function searxngSearch(query: string, maxItems: number): Promise<NewsItem[]> {
-  const [priorityTopics, majorEvents] = await Promise.all([
+  const [priorityTopics, majorEvents, georgiaTopics] = await Promise.all([
     loadPriorityTopics(),
-    loadMajorEvents()
+    loadMajorEvents(),
+    loadGeorgiaPriorityTopics()
   ]);
 
   const baseUrl = getSearxngBaseUrl();
@@ -174,13 +406,25 @@ async function searxngSearch(query: string, maxItems: number): Promise<NewsItem[
       score += 1.5;
       reasons.push("Title contains 'LIVE'");
     }
-    if (majorEvents.length > 0 && majorEvents.some((k) => title.toLowerCase().includes(k))) {
+    if (
+      majorEvents.length > 0 &&
+      majorEvents.some((k) => title.toLowerCase().includes(k))
+    ) {
       score += 2;
       reasons.push("Major event keyword");
     }
-    if (priorityTopics.length > 0 && priorityTopics.some((t) => title.includes(t) || snippet.includes(t))) {
+    if (
+      priorityTopics.length > 0 &&
+      priorityTopics.some((t) => title.includes(t) || snippet.includes(t))
+    ) {
       score *= 1.5;
       reasons.push("Priority topic");
+    }
+
+    const georgia = isGeorgiaTopicText(title, snippet, georgiaTopics);
+    if (georgia) {
+      flags.push("georgia-topic");
+      reasons.push("Georgia priority topic");
     }
 
     if (!title || !itemUrl) {
@@ -216,12 +460,23 @@ async function searxngSearch(query: string, maxItems: number): Promise<NewsItem[
   return items;
 }
 
-function chooseDeliveryPolicy(jobId: NewsJobId): DeliveryPolicy {
+function chooseDeliveryPolicy(
+  jobId: NewsJobId,
+  items: NewsItem[]
+): DeliveryPolicy {
   if (jobId === "breaking-news-sweep") {
+    const highPriorityCount = items.filter((it) => it.score >= 10).length;
+    if (highPriorityCount >= 10) {
+      return {
+        mode: "autoPost",
+        channels: ["#breaking-news"],
+        ntfy: true
+      };
+    }
     return {
       mode: "autoPost",
-      channels: ["#breaking-news"],
-      ntfy: true
+      channels: ["#news"],
+      ntfy: false
     };
   }
   if (jobId === "intel-signals-sweep") {
@@ -266,6 +521,30 @@ async function runBreakingNewsSweep(
     }
   }
 
+  // Precious metals check vs baseline; add a synthetic alert item if +/-5% change detected.
+  try {
+    const metals = await checkMetalsChange();
+    if (metals.alert) {
+      allItems.push({
+        title: "Precious metals move exceeds +/-5% vs baseline",
+        url: "",
+        snippet: JSON.stringify(
+          metals.deltas,
+          (_, value) =>
+            typeof value === "number" ? Number(value.toFixed(2)) : value,
+          2
+        ),
+        score: 10,
+        reasons: ["Precious metals change alert"],
+        flags: ["metals-alert"],
+        seenBefore: false,
+        source: "system"
+      });
+    }
+  } catch {
+    // best-effort; ignore failures
+  }
+
   // Deduplicate by URL and mark seenBefore
   const byUrl = new Map<string, NewsItem>();
   for (const item of allItems) {
@@ -279,7 +558,7 @@ async function runBreakingNewsSweep(
 
   const deduped = Array.from(byUrl.values()).sort((a, b) => b.score - a.score);
 
-  const policy = chooseDeliveryPolicy("breaking-news-sweep");
+  const policy = chooseDeliveryPolicy("breaking-news-sweep", deduped);
   const jobChannels = policy.channels ?? [];
   const updatedHistory: HistoryStore = { ...history };
   const ts = nowIso();
@@ -303,7 +582,7 @@ async function runIntelSignalsSweep(
   params: Record<string, unknown>,
   history: HistoryStore
 ): Promise<{ items: NewsItem[]; updatedHistory: HistoryStore }> {
-  // For now, reuse a narrower searxng search; later this can incorporate bird/library.
+  // Reuse a narrower SearXNG search and incorporate bird timelines.
   const topicsParam = params.topics;
   const topics =
     Array.isArray(topicsParam) && topicsParam.length > 0
@@ -336,6 +615,18 @@ async function runIntelSignalsSweep(
     }
   }
 
+  // Bird timelines for intel signals
+  try {
+    const birdItems = await fetchBirdTimelines();
+    for (const it of birdItems) {
+      it.score -= 1;
+      it.reasons.push("intel-signals tweet");
+    }
+    allItems.push(...birdItems);
+  } catch {
+    // best-effort
+  }
+
   const byUrl = new Map<string, NewsItem>();
   for (const item of allItems) {
     if (!item.url) continue;
@@ -348,7 +639,7 @@ async function runIntelSignalsSweep(
 
   const deduped = Array.from(byUrl.values()).sort((a, b) => b.score - a.score);
 
-  const policy = chooseDeliveryPolicy("intel-signals-sweep");
+  const policy = chooseDeliveryPolicy("intel-signals-sweep", deduped);
   const jobChannels = policy.channels ?? [];
   const updatedHistory: HistoryStore = { ...history };
   const ts = nowIso();
@@ -388,6 +679,28 @@ type NewsGetHistoryStatusArgs = {
   summary?: boolean;
 };
 
+function resolveSuggestedChannel(
+  jobId: NewsJobId,
+  item: NewsItem,
+  basePolicy: DeliveryPolicy
+): string | null {
+  const isGeorgia = item.flags.includes("georgia-topic");
+
+  if (isGeorgia) {
+    if (item.score >= 10) {
+      // Georgia-based topic that qualifies as breaking news.
+      return "#breaking-news";
+    }
+    return "#georgia-news";
+  }
+
+  if (jobId === "intel-signals-sweep") {
+    return "#intel-signals";
+  }
+
+  return basePolicy.channels?.[0] ?? null;
+}
+
 async function handleRunJob(args: NewsRunJobArgs) {
   const jobId = (args.jobId ?? "(missing)") as NewsJobId;
   const dryRun = args.dryRun ?? true;
@@ -420,7 +733,7 @@ async function handleRunJob(args: NewsRunJobArgs) {
     await saveHistory(updatedHistory);
   }
 
-  const deliveryPolicy = chooseDeliveryPolicy(jobId);
+  const deliveryPolicy = chooseDeliveryPolicy(jobId, items);
 
   const suggestedActions = items
     .filter((it) => it.score >= 6 && !!it.url)
@@ -429,7 +742,7 @@ async function handleRunJob(args: NewsRunJobArgs) {
       url: it.url,
       title: it.title,
       score: it.score,
-      channel: deliveryPolicy.channels?.[0] ?? null
+      channel: resolveSuggestedChannel(jobId, it, deliveryPolicy)
     }));
 
   return {
