@@ -465,18 +465,10 @@ function chooseDeliveryPolicy(
   items: NewsItem[]
 ): DeliveryPolicy {
   if (jobId === "breaking-news-sweep") {
-    const highPriorityCount = items.filter((it) => it.score >= 10).length;
-    if (highPriorityCount >= 10) {
-      return {
-        mode: "autoPost",
-        channels: ["#breaking-news"],
-        ntfy: true
-      };
-    }
     return {
       mode: "autoPost",
-      channels: ["#news"],
-      ntfy: false
+      // ntfy is job-level; enable if we have at least one breaking-level item.
+      ntfy: items.some((it) => it.score >= 10)
     };
   }
   if (jobId === "intel-signals-sweep") {
@@ -693,6 +685,14 @@ function resolveSuggestedChannel(
     }
     return "#georgia-news";
   }
+
+   if (jobId === "breaking-news-sweep") {
+     // Per-item routing based on score.
+     if (item.score >= 10) {
+       return "#breaking-news";
+     }
+     return "#news";
+   }
 
   if (jobId === "intel-signals-sweep") {
     return "#intel-signals";
