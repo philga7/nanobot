@@ -17,3 +17,13 @@ services:
       - "8082:8080"
     volumes:
       - ~/.wrenvps/searxng:/etc/searxng
+
+  bird-api:
+    build:
+      context: ./services/bird-api
+    env_file:
+      - .env.wrenvps
+    ports:
+      # Host 18791 = external access (e.g. curl from outside).
+      # Container-to-container = bird-api:18791.
+      - "18791:18791"
