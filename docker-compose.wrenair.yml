@@ -14,3 +14,13 @@ services:
       - "8083:8080"
     volumes:
       - ~/.wrenair/searxng:/etc/searxng
+
+  bird-api:
+    build:
+      context: ./services/bird-api
+    env_file:
+      - .env.wrenair
+    ports:
+      # Host 18791 = external access (e.g. curl from the Mac).
+      # Container-to-container = bird-api:18791.
+      - "18791:18791"
