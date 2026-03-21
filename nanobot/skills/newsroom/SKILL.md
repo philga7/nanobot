@@ -1,178 +1,107 @@
 ---
 name: newsroom
-description: Orchestrate a Four-Part AI Newsroom using SearXNG web search, MCP servers (news/library, journaling, todo, ntfy), and NanoBot’s memory for research, triage, and delivery.
-metadata: {"nanobot":{"emoji":"📰","requires":{"skills":["memory","weather","twitter"],"tools":["web_search","web_fetch"],"mcpServers":["library","todo","ntfy","newsPipeline"]}}}
+description: JSON-driven news pipeline for breaking news, weather, and markets. Runs standalone via cron or NanoBot skill.
+metadata: {"nanobot":{"emoji":"📰","requires":{"tools":["web_search","web_fetch"]}}}
 ---
 
-# Four-Part AI Newsroom
+# Newsroom Skill
 
-Use this skill when the user asks for **news research, breaking news, OSINT, editorial queues, or notifications**. You are orchestrating multiple tools and MCP servers as a **newsroom**, not just answering a one-off query.
+Two pipelines are available: the standalone `services/news_pipeline/` (independent of NanoBot) and the NanoBot-native `nanobot/news/` skill (integrated, scheduled).
 
-The four parts are:
-
-1. **Compute / Wire Service** — Pulls news from SearXNG and X/Twitter, scores and clusters it.
-2. **Library / Config** — Editorial policy and source catalog (priority topics, ignored topics, commentators, OSINT sources).
-3. **Journaling / Logbook** — Operational record of what ran, what posted, and why.
-4. **Todo / Queue** — Stories that need human review or follow-up (editorial queue).
-
-You are the editor that wires these together using tools and MCP servers.
+For NanoBot-native breaking news with OSINT analysis, use `nanobot/news/`:
+- Cron-scheduled: `*/15 6-23 * * *`
+- LLM entity extraction + senior analyst persona for scores ≥ 7
+- Delivery: Slack `#breaking-news` + ntfy `wrenvps-notifications` (score ≥ 10)
+- On-demand deep analysis: `nanobot news --analyze <url>`
 
 ---
 
-## 1. Compute / Wire Service (discovery + scoring)
+## How It Works
 
-**Goal**: Find, cluster, and summarize what matters — never directly post.
-
-Use these tools:
-
-- `web_search` (backed by SearXNG) for **broad discovery**:
-  - Use narrow, explicit queries: `"Georgia breaking news"`, `"CFP live blog"`, `"intel signals [topic]"`.
-  - Prefer `count` 5–10 and then refine rather than huge queries.
-- `web_fetch` to **deep read** a specific URL when needed.
-- `web_fetch` to call **bird-api** (http://bird-api:18791/profile, /timeline, /search) for X/Twitter commentary:
-  - Profiles and timelines for known commentators.
-  - Use sparingly; focus on “intel-signals” or curated handles from the library, not random trends.
-
-**Scoring and classification**:
-
-When the user asks for a sweep (e.g. “breaking news in the last 30 minutes”):
-
-1. Use `web_search` with time/topic filters you infer from the request.
-2. Optionally cross-check with X/Twitter (bird-api) for narrative signals.
-3. For each candidate story, decide:
-   - **Relevance** to the user (country, sector, topics in library config).
-   - **Urgency** (breaking/live, confirmation level, time-sensitivity).
-   - **Novelty** (new vs. already seen).
-4. Represent each story in a **structured bullet**:
-   - `title`, `url`, `whyItMatters`, `riskFlags` (e.g. “unconfirmed”, “single source”), and a **proposed delivery mode**:
-     - `autoPost`: clearly important, highly confirmed, matches priority topics.
-     - `previewOnly`: interesting but needs human review.
-     - `returnOnly`: informational only.
-
-You do not call Slack/ntfy directly at this stage. You only **find, evaluate, and propose**.
+1. **Fetch** — RSS, X/Twitter (bird-api), SearXNG, NWS, Gold API.
+2. **Score** — Topic relevance, recency, OSINT tags, breaking flags.
+3. **Dedupe** — History files in `history/` prevent repeats (7-day TTL).
+4. **Deliver** — `--deliver` posts directly to Slack and ntfy.
 
 ---
 
-## 2. Library / Config (editorial policy + sources)
+## Setup
 
-**Goal**: Treat editorial policy and sources as a **queryable library**, not hardcoded rules.
+Copy config from the repo:
 
-Your library comes from:
+```bash
+mkdir -p ~/.wrenvps/news-pipeline/history
+cp services/news_pipeline/examples/*.json ~/.wrenvps/news-pipeline/
+```
 
-- **MCP library server** (e.g. sqlite literature MCP) for structured sources and notes.
-- **Workspace markdown** for config (priority topics, ignored topics, commentator lists).
-
-Use these patterns:
-
-- When you need policy (e.g. “what counts as breaking for Georgia?”):
-  - Use `read_file` or library MCP tools to fetch the relevant config markdown and **quote it** in your reasoning.
-- When you need source context:
-  - Use library MCP search by tag, entity, or identifier to retrieve commentator/source profiles.
-
-Always prefer **config files and library entries** over inventing policy. If a rule is missing, explicitly say that and propose a concrete markdown addition the user could make.
+Edit JSON as needed. Override config dir: `export NEWS_PIPELINE_DIR=/path/to/config`
 
 ---
 
-## 3. Journaling / Logbook (operational record)
+## Running
 
-**Goal**: Keep a human-readable log of what the newsroom did and why.
+**Scheduled (recommended):** Add to crontab or systemd timer:
 
-Use **journaling** and the SQLite memory search (`search_memory`) to:
+```bash
+# Every 15 min during daytime (breaking news)
+*/15 6-23 * * * cd /path/to/nanobot && NEWS_PIPELINE_DIR=~/.wrenvps/news-pipeline .venv/bin/python -m services.news_pipeline --deliver
 
-- After each significant run (especially scheduled jobs), append a **short journal entry**:
-  - Include: job name, time, items considered, items promoted, delivery modes used, and any anomalies.
-- Tag entries by:
-  - `type`: `news-run`, `intel-signal`, `personal`, `work`.
-  - `scope`: `breaking`, `intel`, `georgia`, etc.
+# Georgia desk every 2 hours
+0 */2 * * * cd /path/to/nanobot && NEWS_PIPELINE_DIR=~/.wrenvps/news-pipeline .venv/bin/python -m services.news_pipeline --job georgia-news-desk --deliver
+```
 
-When debugging (“why didn’t that story surface?”):
+**Manual:**
 
-- First, query the journal (journaling MCP or `search_memory`) for:
-  - The timeframe in question.
-  - Matching tags or keywords (topic, URL, channel).
-- Then explain the behavior in natural language, linking back to journal lines.
+```bash
+# Dry run (no history writes, no delivery)
+python -m services.news_pipeline --dry-run
 
-Do **not** use the dedup/history store for explanation; that is for “have we seen this URL?” only, not operational reasoning.
+# Full run + delivery
+python -m services.news_pipeline --deliver
 
----
-
-## 4. Todo / Queue (editorial review + follow-up)
-
-**Goal**: Use todo MCP as a **story assignment board**, not just a generic list.
-
-Use **todo MCP tools** to:
-
-- For `previewOnly` items:
-  - Create a todo per story, with:
-    - Clear title (include topic/region).
-    - Link to the URL.
-    - Short summary and recommended framing.
-    - Flags like `[BREAKING]`, `[GEORGIA]`, `[INTEL]` in the text when helpful.
-- For follow-up and investigations:
-  - Create tasks like “monitor X for follow-up on [story]”, “collect 2nd source”.
-
-When the user asks “what’s in the queue?”:
-
-- Call todo MCP to **list** relevant todos (by status, tag, or priority).
-- Summarize them into a dashboard-style view (columns by tag or urgency).
+# Single desk or job
+python -m services.news_pipeline --desk news --deliver
+python -m services.news_pipeline --job breaking-news-desk --deliver
+```
 
 ---
 
-## 5. Delivery policies (autoPost / previewOnly / returnOnly)
+## Config Files
 
-When working with recurring jobs or structured sweeps:
-
-- Treat each job as having a **delivery policy**:
-  - `autoPost`: send to Slack/Telegram + ntfy immediately.
-  - `previewOnly`: push to todo MCP; show summary to user.
-  - `returnOnly`: keep in conversation only.
-
-You should:
-
-- Always **compute** a proposed delivery mode for each story based on:
-  - Score (importance, confirmation).
-  - Topic sensitivity (from library/config).
-  - Time of day or quiet windows (e.g. Sunday morning).
-- Then:
-  - For `autoPost`: draft the exact messages and, if tools exist, call Slack/ntfy tools to send them.
-  - For `previewOnly`: create todos and present a compact table of candidates.
-  - For `returnOnly`: just explain your findings.
-
-If the user has not explicitly approved `autoPost` for a job, treat everything as `previewOnly` by default and ask for confirmation before posting to external channels.
+| File | Purpose |
+|------|---------|
+| `jobs.news.json` | Georgia desk, breaking desk — sources, scoring, routing |
+| `jobs.weather.json` | Severe monitor, weekly outlook — NWS locations |
+| `jobs.markets.json` | Metals (XAU, XAG, BTC, ETH) — Gold API, alert rules |
+| `scoring.json` | Thresholds, OSINT keyword map, routing, templates |
+| `topics.json` | Preferred topics (weighted), ignored topics |
+| `history/` | Dedupe: `news_history.json`, `weather_history.json`, `markets_history.json` |
 
 ---
 
-## 6. Using this skill in practice
+## Delivery
 
-When the user asks for things like:
+Set env vars:
+- `SLACK_BOT_TOKEN` — Slack bot token for posting
+- `NTFY_URL` — ntfy server (e.g. `https://ntfy.example.com`)
+- `NTFY_TOKEN` — optional auth
+- `NTFY_TOPIC` — default `news-pipeline`
 
-- “Give me a breaking news sweep for the last hour.”
-- “Watch intel signals from these commentators and queue what matters.”
-- “Why didn’t that Georgia story hit #breaking-news yesterday?”
-- “Build a daily research briefing for work vs personal.”
-
-You should:
-
-1. **Clarify scope** in your own words (time window, topics, channels).
-2. Use `web_search` + bird-api (web_fetch) + library MCP to **discover and score** stories.
-3. Use journaling MCP and/or `search_memory` to **compare with recent history** and explain differences.
-4. Use todo MCP and (optionally) ntfy/Slack tools to **route** stories according to delivery policy.
-5. Summarize the result as an **editorial briefing**, not just a list of links.
-
-Keep a clear separation between:
-
-- **Compute** (discovery, scoring, dedup).
-- **Policy** (library/config).
-- **Logbook** (journaling).
-- **Queue & delivery** (todo MCP, channels, ntfy).
+Per-source `delivery` in JSON controls Slack channels, ntfy, and templates. `deliveryPolicy.mode`: `autoPost` (pipeline posts) or `returnOnly` (no delivery).
 
 ---
 
-## 7. Memory journaling and batching
+## History / Dedupe
 
-When keeping newsroom logs in memory:
+Deduplication uses JSON files in `history/`:
+- `news_history.json`
+- `weather_history.json`
+- `markets_history.json`
 
-- Prefer **small, frequent memory consolidations** (normal Nanobot behavior) over a single huge backfill.
-- Use `search_memory` to query past runs by timeframe, topic, or keyword.
-- Keep entries scoped to a single run or small group of related stories.
+Items older than 7 days are pruned. No separate memory or journal layer.
 
+---
+
+## Ad-hoc Queries
+
+When the user asks "what's breaking?" or "check the news", use `web_search` and `web_fetch` for one-off queries. The pipeline is for scheduled sweeps, not interactive Q&A.
