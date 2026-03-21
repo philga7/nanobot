@@ -1,0 +1,257 @@
+{
+  "jobs": [
+    {
+      "id": "georgia-news-desk",
+      "type": "news",
+      "description": "Georgia RSS + site SearXNG for elections, legislature, Jackson County",
+      "enabled": true,
+      "sources": [
+        {
+          "kind": "rssFeed",
+          "url": "https://allongeorgia.com/category/local-news/feed/",
+          "delivery": {
+            "slack": ["#georgia-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "rssFeed",
+          "url": "https://capitol-beat.org/feed/",
+          "delivery": {
+            "slack": ["#georgia-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "rssFeed",
+          "url": "https://gapundit.com/feed/",
+          "delivery": {
+            "slack": ["#georgia-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "rssFeed",
+          "url": "https://georgiarecorder.com/feed/localFeed/",
+          "delivery": {
+            "slack": ["#georgia-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "searxngQuery",
+          "query": "site:fox5atlanta.com politics",
+          "engines": ["news"],
+          "maxResults": 5,
+          "delivery": {
+            "slack": ["#georgia-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "searxngQuery",
+          "query": "site:wabe.org politics",
+          "engines": ["news"],
+          "maxResults": 5,
+          "delivery": {
+            "slack": ["#georgia-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "searxngQuery",
+          "query": "site:politico.com Georgia",
+          "engines": ["news"],
+          "maxResults": 5,
+          "delivery": {
+            "slack": ["#georgia-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "searxngQuery",
+          "query": "site:ajc.com politics",
+          "engines": ["news"],
+          "maxResults": 5,
+          "delivery": {
+            "slack": ["#georgia-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "searxngQuery",
+          "query": "site:gpb.org politics",
+          "engines": ["news"],
+          "maxResults": 5,
+          "delivery": {
+            "slack": ["#georgia-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        }
+      ],
+      "scoringProfile": "georgiaNews",
+      "osintProfile": "dossier",
+      "routingProfile": "georgiaNews",
+      "overrideQuietWindow": false,
+      "scheduleHint": "0 */2 * * *",
+      "deliveryPolicy": {
+        "mode": "autoPost",
+        "maxItemsPerRun": 8
+      }
+    },
+    {
+      "id": "breaking-news-desk",
+      "type": "news",
+      "description": "CFP + standard RSS + X + SearXNG breaking desk",
+      "enabled": true,
+      "sources": [
+        {
+          "kind": "citizenfreepressFeed",
+          "url": "https://citizenfreepress.com/feed/",
+          "trackLabels": ["breaking", "live"],
+          "delivery": {
+            "slack": ["#breaking-news"],
+            "ntfy": true,
+            "ntfyPriority": "high",
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "rssFeed",
+          "url": "https://www.scotusblog.com/feed/",
+          "delivery": {
+            "slack": ["#breaking-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "rssFeed",
+          "url": "https://www.timesofisrael.com/feed/",
+          "delivery": {
+            "slack": ["#breaking-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "rssFeed",
+          "url": "https://a.jfeed.com/v1/rss/articles/latest/rss2",
+          "delivery": {
+            "slack": ["#breaking-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "birdProfile",
+          "handle": "marionawfal",
+          "lookbackMinutes": 60,
+          "mustMatch": [],
+          "delivery": {
+            "slack": ["#breaking-news", "#intel-signals"],
+            "ntfy": true,
+            "ntfyPriority": "high",
+            "template": "intelSignal"
+          }
+        },
+        {
+          "kind": "birdProfile",
+          "handle": "ChadPergram",
+          "lookbackMinutes": 60,
+          "mustMatch": [],
+          "delivery": {
+            "slack": ["#breaking-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "birdProfile",
+          "handle": "rawsalerts",
+          "lookbackMinutes": 60,
+          "mustMatch": [],
+          "delivery": {
+            "slack": ["#breaking-news", "#intel-signals"],
+            "ntfy": true,
+            "ntfyPriority": "high",
+            "template": "intelSignal"
+          }
+        },
+        {
+          "kind": "birdProfile",
+          "handle": "mossadil",
+          "lookbackMinutes": 60,
+          "mustMatch": [],
+          "delivery": {
+            "slack": ["#intel-signals"],
+            "ntfy": false,
+            "template": "intelSignal"
+          }
+        },
+        {
+          "kind": "birdProfile",
+          "handle": "leadingreport",
+          "lookbackMinutes": 60,
+          "mustMatch": [],
+          "delivery": {
+            "slack": ["#breaking-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "birdProfile",
+          "handle": "theinformation",
+          "lookbackMinutes": 120,
+          "mustMatch": [],
+          "delivery": {
+            "slack": ["#tech"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "searxngQuery",
+          "query": "site:futuretools.io news AI",
+          "engines": ["news"],
+          "maxResults": 5,
+          "delivery": {
+            "slack": ["#tech"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        },
+        {
+          "kind": "searxngQuery",
+          "query": "Reuters OR AP breaking news today",
+          "engines": ["news"],
+          "maxResults": 10,
+          "delivery": {
+            "slack": ["#breaking-news"],
+            "ntfy": false,
+            "template": "breakingBullet"
+          }
+        }
+      ],
+      "scoringProfile": "breakingNews",
+      "osintProfile": "dossier",
+      "routingProfile": "breakingNews",
+      "overrideQuietWindow": false,
+      "scheduleHint": "*/15 6-23 * * *",
+      "deliveryPolicy": {
+        "mode": "autoPost",
+        "maxItemsPerRun": 5
+      }
+    }
+  ]
+}
