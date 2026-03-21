@@ -17,11 +17,21 @@ from nanobot.news.config import (
     NTFY_URL,
     SLACK_CHANNEL,
 )
-from services.news_pipeline import config as np_config
-from services.news_pipeline.pipeline import run_news_job
+
+
+def _get_np_config():
+    from services.news_pipeline import config as np_config
+    return np_config
+
+
+def _get_run_news_job():
+    from services.news_pipeline.pipeline import run_news_job
+    return run_news_job
 
 
 def run_scheduled_news_job(dry_run: bool = False) -> dict[str, Any]:
+    np_config = _get_np_config()
+    run_news_job = _get_run_news_job()
     jobs = np_config.load_news_jobs()
     if not jobs:
         print("[news] No news jobs configured", file=sys.stderr)
@@ -35,7 +45,7 @@ def run_scheduled_news_job(dry_run: bool = False) -> dict[str, Any]:
     enriched = _enrich_results(all_results)
 
     if not dry_run:
-        _deliver_results(enriched)
+        _deliver_results(enriched, np_config)
     else:
         for r in enriched:
             _print_result(r)
@@ -61,17 +71,11 @@ def _enrich_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return results
 
 
-def _deliver_results(results: list[dict[str, Any]]) -> None:
+def _deliver_results(results: list[dict[str, Any]], np_config: Any) -> None:
+    base_dir = np_config.base_dir()
     slack_token = (
-        np_config.base_dir()
-        .parent.parent.joinpath("wrenvps/.slack_bot_token")
-        .expanduser()
-        .read_text()
-        .strip()
-        if np_config.base_dir()
-        .parent.parent.joinpath("wrenvps/.slack_bot_token")
-        .expanduser()
-        .exists()
+        base_dir.parent.parent.joinpath("wrenvps/.slack_bot_token").expanduser().read_text().strip()
+        if base_dir.parent.parent.joinpath("wrenvps/.slack_bot_token").expanduser().exists()
         else None
     )
 
