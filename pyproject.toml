@@ -86,10 +86,11 @@ include = [
     "nanobot/templates/**/*.md",
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
+    "services/**/*.py",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["nanobot"]
+packages = ["nanobot", "services"]
 
 [tool.hatch.build.targets.wheel.sources]
 "nanobot" = "nanobot"
@@ -101,6 +102,7 @@ packages = ["nanobot"]
 include = [
     "nanobot/",
     "bridge/",
+    "services/",
     "README.md",
     "LICENSE",
 ]

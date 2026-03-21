@@ -30,4 +30,4 @@ jobs:
         pip install .[dev]
 
     - name: Run tests
-      run: python -m pytest tests/ -v
+      run: PYTHONPATH=. python -m pytest tests/ -v
