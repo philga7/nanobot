@@ -1,0 +1,16 @@
+name: OpenCode
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  opencode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: opencode-ai/action@v1
+        with:
+          model: ollama/minimax-m2.7:cloud
+        env:
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
