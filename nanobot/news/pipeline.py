@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from typing import Any
 
@@ -37,10 +38,7 @@ def run_scheduled_news_job(dry_run: bool = False) -> dict[str, Any]:
         print("[news] No news jobs configured", file=sys.stderr)
         return {"jobs": [], "total_items": 0, "total_delivered": 0}
 
-    all_results: list[dict[str, Any]] = []
-    for job in jobs:
-        result = run_news_job(job, dry_run=dry_run)
-        all_results.append(result)
+    all_results: list[dict[str, Any]] = asyncio.run(_run_all_jobs(jobs, run_news_job, dry_run))
 
     enriched = _enrich_results(all_results)
 
@@ -56,6 +54,14 @@ def run_scheduled_news_job(dry_run: bool = False) -> dict[str, Any]:
         for r in enriched
     )
     return {"jobs": enriched, "total_items": total_items, "total_delivered": total_delivered}
+
+
+async def _run_all_jobs(jobs: list[dict[str, Any]], run_news_job: Any, dry_run: bool) -> list[dict[str, Any]]:
+    results = []
+    for job in jobs:
+        result = await run_news_job(job, dry_run=dry_run)
+        results.append(result)
+    return results
 
 
 def _enrich_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:

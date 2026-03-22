@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import os
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from datetime import datetime, timezone
 
 from .models import MarketAlert, NewsItem, WeatherEvent
 
@@ -114,17 +114,20 @@ def fetch_rss(source: dict[str, Any]) -> list[NewsItem]:
 
 # ── bird-api (X / Twitter) ──────────────────────────────────────────────────
 
-def fetch_bird(source: dict[str, Any]) -> list[NewsItem]:
-    """Fetch recent tweets from a profile via bird-api."""
+async def fetch_bird(source: dict[str, Any]) -> list[NewsItem]:
+    """Fetch recent tweets from a profile via bird-api using web_fetch."""
     handle = source.get("handle", "")
     limit = min(source.get("lookbackMinutes", 60) // 3, 20)
     must = [m.lower() for m in source.get("mustMatch", [])]
     items: list[NewsItem] = []
+
     try:
-        resp = _get(f"{BIRD_API_BASE}/timeline", params={"handle": f"@{handle}", "limit": limit})
-        resp.raise_for_status()
-        data = resp.json()
-    except (httpx.HTTPError, ValueError):
+        from nanobot.agent.tools.web import WebFetchTool
+        tool = WebFetchTool()
+        url = f"{BIRD_API_BASE}/timeline?handle=@{handle}&limit={limit}"
+        result = await tool.execute(url=url)
+        data = eval(result) if isinstance(result, str) else result
+    except Exception:
         return items
 
     tweets = data if isinstance(data, list) else data.get("tweets", data.get("results", []))
@@ -132,9 +135,9 @@ def fetch_bird(source: dict[str, Any]) -> list[NewsItem]:
         text = tw.get("text", tw.get("full_text", ""))
         if must and not any(m in text.lower() for m in must):
             continue
-        url = tw.get("url", f"https://x.com/{handle}/status/{tw.get('id', '')}")
+        tw_url = tw.get("url", f"https://x.com/{handle}/status/{tw.get('id', '')}")
         items.append(NewsItem(
-            title=text[:200], url=url, source_kind="bird",
+            title=text[:200], url=tw_url, source_kind="bird",
             published=tw.get("created_at", ""),
             delivery=source.get("delivery", {}),
             has_breaking_label=any(w in text.lower() for w in ("breaking", "alert")),
@@ -326,11 +329,15 @@ SOURCE_MAP = {
 }
 
 
-def fetch_news_sources(job: dict[str, Any]) -> list[NewsItem]:
+async def fetch_news_sources(job: dict[str, Any]) -> list[NewsItem]:
     """Fetch from all sources configured for a news job."""
     items: list[NewsItem] = []
     for src in job.get("sources", []):
-        handler = SOURCE_MAP.get(src.get("kind", ""))
+        kind = src.get("kind", "")
+        handler = SOURCE_MAP.get(kind)
         if handler:
-            items.extend(handler(src))
+            if kind == "birdProfile":
+                items.extend(await handler(src))
+            else:
+                items.extend(handler(src))
     return items
