@@ -7,6 +7,10 @@ import re
 import socket
 from urllib.parse import urlparse
 
+_ALLOWED_NETWORKS = [
+    ipaddress.ip_network("172.26.0.0/16"),  # bird-api Docker network
+]
+
 _BLOCKED_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
@@ -56,6 +60,9 @@ def validate_url_target(url: str) -> tuple[bool, str]:
             addr = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
+        # Check allowlist first
+        if _ALLOWED_NETWORKS and any(addr in net for net in _ALLOWED_NETWORKS):
+            return True, ""
         if _is_private(addr):
             return False, f"Blocked: {hostname} resolves to private/internal address {addr}"
 
@@ -75,6 +82,8 @@ def validate_resolved_url(url: str) -> tuple[bool, str]:
 
     try:
         addr = ipaddress.ip_address(hostname)
+        if _ALLOWED_NETWORKS and any(addr in net for net in _ALLOWED_NETWORKS):
+            return True, ""
         if _is_private(addr):
             return False, f"Redirect target is a private address: {addr}"
     except ValueError:
@@ -88,6 +97,8 @@ def validate_resolved_url(url: str) -> tuple[bool, str]:
                 addr = ipaddress.ip_address(info[4][0])
             except ValueError:
                 continue
+            if _ALLOWED_NETWORKS and any(addr in net for net in _ALLOWED_NETWORKS):
+                return True, ""
             if _is_private(addr):
                 return False, f"Redirect target {hostname} resolves to private address {addr}"
 
