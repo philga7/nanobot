@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from datetime import datetime
@@ -21,8 +22,8 @@ from .sources import (
 )
 
 
-def run_news_job(job: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
-    items = fetch_news_sources(job)
+async def run_news_job(job: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
+    items = await fetch_news_sources(job)
     scored: list[NewsItem] = []
     profile = job.get("scoringProfile", "breakingNews")
     osint_profile = job.get("osintProfile", "dossier")
@@ -280,13 +281,14 @@ JOB_RUNNERS = {
 }
 
 
-def run_all(dry_run: bool = False) -> list[dict[str, Any]]:
+
+async def run_all(dry_run: bool = False) -> list[dict[str, Any]]:
     """Run all enabled jobs across all desks."""
     results: list[dict[str, Any]] = []
 
     for job in config.load_news_jobs():
         if job.get("enabled", True):
-            results.append(run_news_job(job, dry_run))
+            results.append(await run_news_job(job, dry_run))
 
     for job in config.load_weather_jobs():
         if job.get("enabled", True):
@@ -299,13 +301,15 @@ def run_all(dry_run: bool = False) -> list[dict[str, Any]]:
     return results
 
 
-def run_job(job_id: str, dry_run: bool = False) -> dict[str, Any] | None:
+async def run_job(job_id: str, dry_run: bool = False) -> dict[str, Any] | None:
     """Run a single job by id."""
     all_jobs = config.load_news_jobs() + config.load_weather_jobs() + config.load_markets_jobs()
     for job in all_jobs:
         if job.get("id") == job_id:
             runner = JOB_RUNNERS.get(job.get("type", ""))
             if runner:
+                if job.get("type") == "news":
+                    return await runner(job, dry_run)
                 return runner(job, dry_run)
     return None
 
@@ -322,14 +326,17 @@ def main() -> None:
     dry_run = args.dry_run and not args.deliver
 
     if args.job:
-        result = run_job(args.job, dry_run=dry_run)
+        result = asyncio.run(run_job(args.job, dry_run=dry_run))
         results = [result] if result else []
     elif args.desk:
         loader = {"news": config.load_news_jobs, "weather": config.load_weather_jobs, "markets": config.load_markets_jobs}[args.desk]
         runner = JOB_RUNNERS[args.desk]
-        results = [runner(j, dry_run) for j in loader() if j.get("enabled", True)]
+        if args.desk == "news":
+            results = asyncio.run(asyncio.gather(*[runner(j, dry_run) for j in loader() if j.get("enabled", True)]))
+        else:
+            results = [runner(j, dry_run) for j in loader() if j.get("enabled", True)]
     else:
-        results = run_all(dry_run=dry_run)
+        results = asyncio.run(run_all(dry_run=dry_run))
 
     if args.deliver:
         from .deliver import deliver_results
