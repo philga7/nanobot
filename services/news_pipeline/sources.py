@@ -116,6 +116,9 @@ def fetch_rss(source: dict[str, Any]) -> list[NewsItem]:
 
 async def fetch_bird(source: dict[str, Any]) -> list[NewsItem]:
     """Fetch recent tweets from a profile via bird-api using web_fetch."""
+    import json
+    import re
+
     handle = source.get("handle", "")
     limit = min(source.get("lookbackMinutes", 60) // 3, 20)
     must = [m.lower() for m in source.get("mustMatch", [])]
@@ -126,23 +129,44 @@ async def fetch_bird(source: dict[str, Any]) -> list[NewsItem]:
         tool = WebFetchTool()
         url = f"{BIRD_API_BASE}/timeline?handle=@{handle}&limit={limit}"
         result = await tool.execute(url=url)
-        data = eval(result) if isinstance(result, str) else result
+        env = json.loads(result) if isinstance(result, str) else result
+        inner_text = env.get("text", "")
+        data = json.loads(inner_text)
+        output = data.get("output", "")
     except Exception:
         return items
 
-    tweets = data if isinstance(data, list) else data.get("tweets", data.get("results", []))
-    for tw in tweets:
-        text = tw.get("text", tw.get("full_text", ""))
+    entries = output.split("\n\n")
+    for entry in entries:
+        entry = entry.strip()
+        if not entry:
+            continue
+        lines = entry.split("\n")
+        if not lines:
+            continue
+        header_match = re.match(r"^@(\w+)\s*\(([^)]+)\):?\s*$", lines[0])
+        if not header_match:
+            continue
+        tweet_handle = header_match.group(1)
+        tweet_name = header_match.group(2)
+        tweet_lines = []
+        url = None
+        for line in lines[1:]:
+            if re.match(r"^https?://", line):
+                url = line
+                break
+            tweet_lines.append(line)
+        text = " ".join(tweet_lines).strip()
         if must and not any(m in text.lower() for m in must):
             continue
-        tw_url = tw.get("url", f"https://x.com/{handle}/status/{tw.get('id', '')}")
+        tw_url = url or f"https://x.com/{tweet_handle}/status/"
         items.append(NewsItem(
             title=text[:200], url=tw_url, source_kind="bird",
-            published=tw.get("created_at", ""),
+            published="",
             delivery=source.get("delivery", {}),
             has_breaking_label=any(w in text.lower() for w in ("breaking", "alert")),
             has_live_label="live" in text.lower(),
-            raw=tw,
+            raw={"handle": tweet_handle, "name": tweet_name, "text": text},
         ))
     return items
 
