@@ -140,10 +140,16 @@ async def fetch_bird(source: dict[str, Any]) -> list[NewsItem]:
         return items
 
     def _finalize(entry: dict[str, Any]) -> None:
-        text = " ".join(entry["text_lines"]).strip()
+        text_lines = [
+            line for line in entry["text_lines"]
+            if not re.match(r"^https?://", line)
+            and not line.startswith("VIDEO:")
+            and not re.match(r"^PHOTO:", line)
+        ]
+        text = " ".join(text_lines).strip()
         if must and not any(m in text.lower() for m in must):
             return
-        tw_url = entry["url"] or f"https://x.com/{entry['handle']}/status/"
+        tw_url = f"https://x.com/{entry['handle']}/status/{entry.get('tweet_id', '')}"
         items.append(NewsItem(
             title=text[:200], url=tw_url, source_kind="bird",
             published="",
@@ -171,18 +177,27 @@ async def fetch_bird(source: dict[str, Any]) -> list[NewsItem]:
                 "name": header_match.group(2),
                 "text_lines": [],
                 "url": None,
+                "tweet_id": None,
             }
             for line in lines[1:]:
-                if re.match(r"^https?://", line):
+                if re.match(r"^https://(x\.com|twitter\.com)/", line):
                     current_entry["url"] = line
+                    break
+                # Stop if we hit the tweet footer separator
+                if re.match(r"^─+\s*$", line) or line.startswith("date:") or line.startswith("url:"):
                     break
                 current_entry["text_lines"].append(line)
         else:
             if current_entry is not None:
                 for line in lines:
-                    if re.match(r"^https?://", line):
+                    if re.match(r"^https://(x\.com|twitter\.com)/", line):
                         if current_entry["url"] is None:
                             current_entry["url"] = line
+                        break
+                    if line.startswith("url: https://x.com/") and not current_entry.get("tweet_id"):
+                        current_entry["tweet_id"] = line.split("/")[-1]
+                    # Stop if we hit the tweet footer separator
+                    if re.match(r"^─+\s*$", line) or line.startswith("date:") or line.startswith("url:"):
                         break
                     current_entry["text_lines"].append(line)
     if current_entry is not None:
