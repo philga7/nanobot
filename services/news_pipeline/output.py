@@ -119,8 +119,10 @@ def build_output(items: list[Item], job: dict[str, Any], desk: str) -> dict[str,
         lines = [header] + [_fmt_item(it, tpl) for it, _, _ in group]
         slack_msg = "\n".join(lines)
 
-        breaking = [it for it, _, _ in group if it.is_breaking]
+        min_to_ntfy = policy.get("minToNtfy", 10)  # default 10, configurable per job
+
         ntfy_msg = ""
+        breaking = [it for it, _, _ in group if it.score >= min_to_ntfy]
         if breaking:
             ntfy_lines = [f"BREAKING — {desk}"]
             for it in breaking[:5]:
@@ -161,7 +163,8 @@ def build_output(items: list[Item], job: dict[str, Any], desk: str) -> dict[str,
 def _suggest_actions(items: list[Item], policy: dict, delivery: dict) -> list[dict]:
     mode = policy.get("mode", "returnOnly")
     actions: list[dict] = []
-    breaking = [i for i in items if i.is_breaking]
+    min_to_ntfy = policy.get("minToNtfy", 10)
+    breaking = [i for i in items if i.score >= min_to_ntfy]
 
     if mode == "autoPost" and items:
         for ch in delivery.get("slack", []):

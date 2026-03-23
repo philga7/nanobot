@@ -250,7 +250,8 @@
       "scheduleHint": "*/15 6-23 * * *",
       "deliveryPolicy": {
         "mode": "autoPost",
-        "maxItemsPerRun": 5
+        "maxItemsPerRun": 5,
+        "minToNtfy": 12
       }
     }
   ]
