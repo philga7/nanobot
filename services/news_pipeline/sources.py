@@ -173,16 +173,22 @@ async def fetch_bird(source: dict[str, Any]) -> list[NewsItem]:
                 "url": None,
             }
             for line in lines[1:]:
-                if re.match(r"^https?://", line):
+                if re.match(r"^https://(x\.com|twitter\.com)/", line):
                     current_entry["url"] = line
+                    break
+                # Stop if we hit the tweet footer separator
+                if re.match(r"^─+\s*$", line) or line.startswith("date:") or line.startswith("url:"):
                     break
                 current_entry["text_lines"].append(line)
         else:
             if current_entry is not None:
                 for line in lines:
-                    if re.match(r"^https?://", line):
+                    if re.match(r"^https://(x\.com|twitter\.com)/", line):
                         if current_entry["url"] is None:
                             current_entry["url"] = line
+                        break
+                    # Stop if we hit the tweet footer separator
+                    if re.match(r"^─+\s*$", line) or line.startswith("date:") or line.startswith("url:"):
                         break
                     current_entry["text_lines"].append(line)
     if current_entry is not None:
