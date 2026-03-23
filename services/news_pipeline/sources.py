@@ -136,7 +136,22 @@ async def fetch_bird(source: dict[str, Any]) -> list[NewsItem]:
     except Exception:
         return items
 
+    def _finalize(entry: dict[str, Any]) -> None:
+        text = " ".join(entry["text_lines"]).strip()
+        if must and not any(m in text.lower() for m in must):
+            return
+        tw_url = entry["url"] or f"https://x.com/{entry['handle']}/status/"
+        items.append(NewsItem(
+            title=text[:200], url=tw_url, source_kind="bird",
+            published="",
+            delivery=source.get("delivery", {}),
+            has_breaking_label=any(w in text.lower() for w in ("breaking", "alert")),
+            has_live_label="live" in text.lower(),
+            raw={"handle": entry["handle"], "name": entry["name"], "text": text},
+        ))
+
     entries = output.split("\n\n")
+    current_entry: dict[str, Any] | None = None
     for entry in entries:
         entry = entry.strip()
         if not entry:
@@ -145,29 +160,30 @@ async def fetch_bird(source: dict[str, Any]) -> list[NewsItem]:
         if not lines:
             continue
         header_match = re.match(r"^@(\w+)\s*\(([^)]+)\):?\s*$", lines[0])
-        if not header_match:
-            continue
-        tweet_handle = header_match.group(1)
-        tweet_name = header_match.group(2)
-        tweet_lines = []
-        url = None
-        for line in lines[1:]:
-            if re.match(r"^https?://", line):
-                url = line
-                break
-            tweet_lines.append(line)
-        text = " ".join(tweet_lines).strip()
-        if must and not any(m in text.lower() for m in must):
-            continue
-        tw_url = url or f"https://x.com/{tweet_handle}/status/"
-        items.append(NewsItem(
-            title=text[:200], url=tw_url, source_kind="bird",
-            published="",
-            delivery=source.get("delivery", {}),
-            has_breaking_label=any(w in text.lower() for w in ("breaking", "alert")),
-            has_live_label="live" in text.lower(),
-            raw={"handle": tweet_handle, "name": tweet_name, "text": text},
-        ))
+        if header_match:
+            if current_entry is not None:
+                _finalize(current_entry)
+            current_entry = {
+                "handle": header_match.group(1),
+                "name": header_match.group(2),
+                "text_lines": [],
+                "url": None,
+            }
+            for line in lines[1:]:
+                if re.match(r"^https?://", line):
+                    current_entry["url"] = line
+                    break
+                current_entry["text_lines"].append(line)
+        else:
+            if current_entry is not None:
+                for line in lines:
+                    if re.match(r"^https?://", line):
+                        if current_entry["url"] is None:
+                            current_entry["url"] = line
+                        break
+                    current_entry["text_lines"].append(line)
+    if current_entry is not None:
+        _finalize(current_entry)
     return items
 
 
