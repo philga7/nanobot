@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 _ALLOWED_NETWORKS = [
     ipaddress.ip_network("172.26.0.0/16"),  # bird-api Docker network
+    ipaddress.ip_network("127.0.0.0/8"),      # localhost
 ]
 
 _BLOCKED_NETWORKS = [
