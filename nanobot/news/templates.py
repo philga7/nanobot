@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 from nanobot.news.config import NTFY_TOPIC, NTFY_URL
 
@@ -25,23 +26,15 @@ def build_slack_message(
     if not items:
         return ""
 
-    header = f"*{desk}* — {len(items)} story(ies)\n"
-    lines = [header]
-
+    lines = []
     for item in items:
         title = item.get("title", "")
         url = item.get("url", "")
-        score = item.get("score", 0)
-        is_breaking = item.get("is_breaking", False)
-        osint_tags = item.get("osint_tags", [])
-        analyst_note = item.get("analyst_note", "")
-
-        tags_str = f" [{', '.join(osint_tags[:3])}]" if osint_tags else ""
-        headline = slack_headline(title, score, is_breaking)
-        line = f"• <{url}|{headline}>{tags_str}"
-        if analyst_note:
-            line += f"\n  _{analyst_note}_"
-        lines.append(line)
+        try:
+            domain = urlparse(url).netloc
+        except Exception:
+            domain = url
+        lines.append(f"• {title} <{url}|({domain})>")
 
     return "\n".join(lines)
 
