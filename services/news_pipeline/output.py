@@ -44,14 +44,20 @@ def _resolve_template(delivery: dict[str, Any], job: dict[str, Any]) -> dict[str
 # ── Per-item formatting ──────────────────────────────────────────────────────
 
 def _fmt_news_item(it: NewsItem, tpl: dict[str, Any]) -> str:
-    flag = " :rotating_light:" if it.is_breaking else ""
-    tags = f" [{', '.join(it.osint_tags[:3])}]" if tpl.get("includeOsintTags") and it.osint_tags else ""
-    score = f"*[{it.score}]*" if tpl.get("includeScore", True) else ""
-    line = f"• {score}{flag} <{it.url}|{it.title}>{tags}"
+    # Extract source domain from URL for parenthetical.
+    from urllib.parse import urlparse
+
+    try:
+        domain = urlparse(it.url).netloc
+    except Exception:
+        domain = it.url
+
+    # Headline with link embedded on text, source as parenthetical.
+    line = f"• <{it.url}|{it.title}> ({domain})"
     if tpl.get("includeAnalystNote") and it.analyst_note:
         line += f"\n  _{it.analyst_note}_"
     if tpl.get("includeDossier") and it.dossier:
-        line += f"\n  ```{it.dossier}```"
+        line += f"\n{it.dossier}\n"
     return line
 
 
@@ -115,8 +121,7 @@ def build_output(items: list[Item], job: dict[str, Any], desk: str) -> dict[str,
         max_items = tpl.get("maxItems", 10)
         group = group[:max_items]
 
-        header = f"*{job.get('description', desk)}*\n"
-        lines = [header] + [_fmt_item(it, tpl) for it, _, _ in group]
+        lines = [_fmt_item(it, tpl) for it, _, _ in group]
         slack_msg = "\n".join(lines)
 
         min_to_ntfy = policy.get("minToNtfy", 10)  # default 10, configurable per job
@@ -124,11 +129,7 @@ def build_output(items: list[Item], job: dict[str, Any], desk: str) -> dict[str,
         ntfy_msg = ""
         breaking = [it for it, _, _ in group if it.score >= min_to_ntfy]
         if breaking:
-            ntfy_lines = [f"BREAKING — {desk}"]
-            for it in breaking[:5]:
-                title = getattr(it, "title", getattr(it, "headline", getattr(it, "label", "")))
-                ntfy_lines.append(f"[{it.score}] {title}")
-            ntfy_msg = "\n".join(ntfy_lines)
+            ntfy_msg = build_ntfy_summary(breaking, desk)
 
         actions = _suggest_actions(
             [it for it, _, _ in group], policy, delivery
@@ -175,3 +176,10 @@ def _suggest_actions(items: list[Item], policy: dict, delivery: dict) -> list[di
         actions.append({"action": "queueForReview"})
 
     return actions
+
+
+def build_ntfy_summary(items: list[Item], desk: str) -> str:
+    """Simple fallback summary text for ntfy notifications."""
+    count = len(items)
+    top_story = items[0].title[:80] if items and isinstance(items[0], NewsItem) else "no stories"
+    return f"{top_story} — {count} stories on {desk}"

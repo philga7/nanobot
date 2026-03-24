@@ -63,10 +63,10 @@
   "templates": {
     "breakingBullet": {
       "style": "bullet",
-      "includeScore": true,
-      "includeOsintTags": true,
+      "includeScore": false,
+      "includeOsintTags": false,
       "includeAnalystNote": true,
-      "includeDossier": true,
+      "includeDossier": false,
       "maxItems": 5
     },
     "dailyDigest": {
