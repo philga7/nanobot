@@ -44,21 +44,14 @@ def _resolve_template(delivery: dict[str, Any], job: dict[str, Any]) -> dict[str
 # ── Per-item formatting ──────────────────────────────────────────────────────
 
 def _fmt_news_item(it: NewsItem, tpl: dict[str, Any]) -> str:
-    # Extract source domain from URL for parenthetical.
     from urllib.parse import urlparse
-
     try:
         domain = urlparse(it.url).netloc
     except Exception:
         domain = it.url
 
-    # Headline with link embedded on text, source as parenthetical.
-    line = f"• <{it.url}|{it.title}> ({domain})"
-    if tpl.get("includeAnalystNote") and it.analyst_note:
-        line += f"\n  _{it.analyst_note}_"
-    if tpl.get("includeDossier") and it.dossier:
-        line += f"\n{it.dossier}\n"
-    return line
+    # Headline as plain text, link on source domain parenthetical only.
+    return f"• {it.title} <{it.url}|({domain})>"
 
 
 def _fmt_weather_event(ev: WeatherEvent, tpl: dict[str, Any]) -> str:
