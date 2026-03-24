@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from nanobot.news import templates
-from nanobot.news.agent import extract_entities
+from nanobot.news.agent import extract_entities, summarize_headlines
 from nanobot.news.config import (
     ENRICHMENT_THRESHOLD,
     NTFY_THRESHOLD,
@@ -94,7 +94,7 @@ def _deliver_results(results: list[dict[str, Any]], np_config: Any) -> None:
 
             slack_msg = templates.build_slack_message(items, result.get("jobId", ""), desk, SLACK_CHANNEL)
             ntfy_items = [i for i in items if i.get("score", 0) >= NTFY_THRESHOLD]
-            ntfy_msg = templates.build_ntfy_message(ntfy_items, desk) if ntfy_items else ""
+            ntfy_msg = summarize_headlines(ntfy_items)
 
             if slack_msg:
                 _post_slack(slack_msg, SLACK_CHANNEL, slack_token)

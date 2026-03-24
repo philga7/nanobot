@@ -80,6 +80,40 @@ def _build_analyst_note(entities: dict[str, Any], existing_tags: list[str]) -> s
     return " | ".join(parts) if parts else ""
 
 
+def summarize_headlines(items: list[dict[str, Any]]) -> str:
+    """Take a list of news items and produce a single summary headline via LLM."""
+    if not items:
+        return ""
+
+    headlines = [f"- {it.get('title', '')[:100]}" for it in items[:8]]
+    headlines_text = "\n".join(headlines)
+
+    try:
+        response = litellm.acompletion(
+            model=DEFAULT_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior news editor. Given a list of breaking news headlines, "
+                        "produce a single concise summary headline (max 100 characters) that captures the main story. "
+                        "Return ONLY the headline text, no quotes, no explanation."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Headlines:\n{headlines_text}",
+                },
+            ],
+            max_tokens=50,
+        )
+        summary = response.choices[0].message.content.strip()
+        return f"{summary} — {len(items)} stories"
+    except Exception as e:
+        print(f"[news] LLM summarization failed: {e}", file=sys.stderr)
+        return f"{len(items)} breaking news items — see Slack"
+
+
 def analyze(url_or_text: str) -> dict[str, Any]:
     try:
         response = litellm.acompletion(
