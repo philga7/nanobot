@@ -138,7 +138,8 @@ def build_output(items: list[Item], job: dict[str, Any], desk: str) -> dict[str,
 
         deliveries.append({
             "slack": delivery.get("slack", job_routing.get("slack", [])),
-            "ntfy": delivery.get("ntfy", job_routing.get("ntfy", False)),
+            "ntfy": delivery.get("ntfy", job_routing.get("ntfy", False))
+            or bool(policy.get("minToNtfy", 0)),
             "ntfyPriority": delivery.get("ntfyPriority", job_routing.get("ntfyPriority", "default")),
             "template": delivery.get("template", ""),
             "slackMessage": slack_msg,
