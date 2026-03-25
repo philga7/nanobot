@@ -6,7 +6,17 @@ import os
 import sys
 from typing import Any
 
-import litellm
+try:
+    import litellm
+except ModuleNotFoundError:
+    class _LiteLLMStub:
+        @staticmethod
+        def acompletion(*args: Any, **kwargs: Any) -> Any:
+            raise ModuleNotFoundError(
+                "litellm is not installed. Install with `pip install 'nanobot-ai[litellm]'`."
+            )
+
+    litellm = _LiteLLMStub()  # type: ignore[assignment]
 
 DEFAULT_MODEL = os.environ.get("NANOBOT_NEWS_MODEL", "ollama/minimax-m2.7:cloud")
 

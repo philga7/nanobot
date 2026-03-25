@@ -63,8 +63,10 @@ class TestTemplates:
         result = build_slack_message(items, "breaking-news", "Breaking News", "#breaking-news")
         assert "Test Story" in result
         assert "https://example.com/test" in result
-        assert "[8]" in result
-        assert "geopolitics" in result
+        assert "example.com" in result
+        assert "• Test Story" in result
+        assert "[8]" not in result
+        assert "geopolitics" not in result
 
     def test_build_slack_message_empty(self) -> None:
         result = build_slack_message([], "breaking-news", "Breaking News", "#breaking-news")

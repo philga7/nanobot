@@ -120,7 +120,7 @@ def deliver_results(results: list[dict[str, Any]]) -> dict[str, Any]:
                         journal["totalSlackPosts"] += 1
 
             if mode == "autoPost" and ntfy_enabled and ntfy_msg:
-                if push_ntfy(ntfy_msg, priority=ntfy_priority, title=f"Breaking — {desk}"):
+                if push_ntfy(ntfy_msg, priority=ntfy_priority, title=f"Breaking - {desk}"):
                     job_entry["ntfyPushes"] += 1
                     journal["totalNtfyPushes"] += 1
 

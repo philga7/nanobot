@@ -7,12 +7,24 @@ import string
 from typing import Any
 
 import json_repair
-import litellm
-from litellm import acompletion
 from loguru import logger
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.registry import find_by_model, find_gateway
+
+try:
+    import litellm
+    from litellm import acompletion
+except ModuleNotFoundError:
+    class _LiteLLMStub:
+        api_base: str | None = None
+        suppress_debug_info: bool = True
+        drop_params: bool = True
+
+    litellm = _LiteLLMStub()  # type: ignore[assignment]
+
+    async def acompletion(*args: Any, **kwargs: Any) -> Any:
+        raise ModuleNotFoundError("litellm is not installed. Install with `pip install 'nanobot-ai[litellm]'`.")
 
 # Standard chat-completion message keys.
 _ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"})

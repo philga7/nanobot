@@ -11,7 +11,7 @@ DEFAULT_BASE = os.path.expanduser("~/.wrenvps/news-pipeline")
 
 
 def base_dir() -> Path:
-    return Path(os.environ.get("NEWS_PIPELINE_DIR", DEFAULT_BASE))
+    return Path(os.path.expanduser(os.environ.get("NEWS_PIPELINE_DIR", DEFAULT_BASE)))
 
 
 def _load(name: str) -> dict[str, Any]:

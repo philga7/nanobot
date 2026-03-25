@@ -130,7 +130,7 @@ def _push_ntfy(message: str, desk: str) -> None:
         print(f"[news] No NTFY_URL — would push to {NTFY_TOPIC}", file=sys.stderr)
         return
     url = f"{NTFY_URL.rstrip('/')}/{NTFY_TOPIC}"
-    headers: dict[str, str] = {"Priority": "high", "Title": f"Breaking — {desk}"}
+    headers: dict[str, str] = {"Priority": "high", "Title": f"Breaking - {desk}"}
     if NTFY_TOKEN:
         headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
     try:
