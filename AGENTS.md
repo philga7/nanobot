@@ -7,7 +7,7 @@ nanobot is a lightweight personal AI assistant framework written in Python 3.11+
 ## Tech Stack
 
 - **Runtime**: Python 3.11+
-- **AI Integration**: litellm
+- **AI Integration**: OpenAI + Anthropic SDKs (OpenAI-compatible providers unified in `OpenAICompatProvider`)
 - **Data Validation**: pydantic, pydantic-settings
 - **Async**: asyncio, websockets
 - **CLI**: typer

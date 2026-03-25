@@ -2,23 +2,54 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from typing import Any
 
-try:
-    import litellm
-except ModuleNotFoundError:
-    class _LiteLLMStub:
-        @staticmethod
-        def acompletion(*args: Any, **kwargs: Any) -> Any:
-            raise ModuleNotFoundError(
-                "litellm is not installed. Install with `pip install 'nanobot-ai[litellm]'`."
-            )
+from openai import OpenAI
 
-    litellm = _LiteLLMStub()  # type: ignore[assignment]
+DEFAULT_MODEL = os.environ.get("NANOBOT_NEWS_MODEL", "minimax-m2.7:cloud")
 
-DEFAULT_MODEL = os.environ.get("NANOBOT_NEWS_MODEL", "ollama/minimax-m2.7:cloud")
+
+def _news_openai_client() -> OpenAI:
+    """OpenAI-compatible client for news pipeline (Ollama, OpenRouter, etc.)."""
+    api_key = os.environ.get("NANOBOT_NEWS_API_KEY") or os.environ.get("OPENAI_API_KEY") or "ollama"
+    base_url = (
+        os.environ.get("NANOBOT_NEWS_OPENAI_BASE_URL")
+        or os.environ.get("NANOBOT_NEWS_API_BASE")
+        or os.environ.get("OPENAI_API_BASE")
+    )
+    if base_url:
+        return OpenAI(api_key=api_key, base_url=base_url.rstrip("/"))
+    return OpenAI(api_key=api_key, base_url="http://127.0.0.1:11434/v1")
+
+
+def _normalize_model_name(model: str) -> str:
+    """Strip legacy LiteLLM-style provider prefixes for OpenAI-compatible servers."""
+    for prefix in ("ollama/", "openai/", "openrouter/"):
+        if model.startswith(prefix):
+            return model[len(prefix) :]
+    return model
+
+
+def _chat_completion(
+    *,
+    model: str,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    response_format: dict[str, str] | None = None,
+) -> Any:
+    client = _news_openai_client()
+    m = _normalize_model_name(model)
+    kwargs: dict[str, Any] = {
+        "model": m,
+        "messages": messages,
+        "max_tokens": max_tokens,
+    }
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+    return client.chat.completions.create(**kwargs)
 
 
 def extract_entities(item: dict[str, Any]) -> dict[str, Any]:
@@ -31,7 +62,7 @@ def extract_entities(item: dict[str, Any]) -> dict[str, Any]:
         return item
 
     try:
-        response = litellm.acompletion(
+        response = _chat_completion(
             model=DEFAULT_MODEL,
             messages=[
                 {
@@ -55,14 +86,14 @@ def extract_entities(item: dict[str, Any]) -> dict[str, Any]:
                 },
             ],
             max_tokens=500,
-            json_schema=True,
+            response_format={"type": "json_object"},
         )
-        content = response.choices[0].message.content.strip()
+        content = (response.choices[0].message.content or "").strip()
         if content.startswith("```"):
             content = content.split("```")[1]
             if content.startswith("json"):
                 content = content[4:]
-        result: dict[str, Any] = eval(content)
+        result: dict[str, Any] = json.loads(content)
         item["entities"] = result
         item["analyst_note"] = _build_analyst_note(result, tags)
         return item
@@ -99,7 +130,7 @@ def summarize_headlines(items: list[dict[str, Any]]) -> str:
     headlines_text = "\n".join(headlines)
 
     try:
-        response = litellm.acompletion(
+        response = _chat_completion(
             model=DEFAULT_MODEL,
             messages=[
                 {
@@ -117,7 +148,7 @@ def summarize_headlines(items: list[dict[str, Any]]) -> str:
             ],
             max_tokens=50,
         )
-        summary = response.choices[0].message.content.strip()
+        summary = (response.choices[0].message.content or "").strip()
         return f"{summary} — {len(items)} stories"
     except Exception as e:
         print(f"[news] LLM summarization failed: {e}", file=sys.stderr)
@@ -126,7 +157,7 @@ def summarize_headlines(items: list[dict[str, Any]]) -> str:
 
 def analyze(url_or_text: str) -> dict[str, Any]:
     try:
-        response = litellm.acompletion(
+        response = _chat_completion(
             model=DEFAULT_MODEL,
             messages=[
                 {
@@ -146,7 +177,7 @@ def analyze(url_or_text: str) -> dict[str, Any]:
             max_tokens=1000,
         )
         return {
-            "analysis": response.choices[0].message.content.strip(),
+            "analysis": (response.choices[0].message.content or "").strip(),
             "source": url_or_text,
         }
     except Exception as e:
