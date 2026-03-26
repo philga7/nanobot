@@ -495,7 +495,7 @@ def test_agent_uses_workspace_directory_for_cron_store(monkeypatch, tmp_path: Pa
     assert seen["cron_store"] == config.workspace_path / "cron" / "jobs.json"
 
 
-def test_agent_workspace_override_does_not_migrate_legacy_cron(
+def test_agent_workspace_override_migrates_legacy_cron(
     monkeypatch, tmp_path: Path
 ) -> None:
     config_file = tmp_path / "instance" / "config.json"
@@ -543,11 +543,11 @@ def test_agent_workspace_override_does_not_migrate_legacy_cron(
 
     assert result.exit_code == 0
     assert seen["cron_store"] == override / "cron" / "jobs.json"
-    assert legacy_file.exists()
-    assert not (override / "cron" / "jobs.json").exists()
+    assert not legacy_file.exists()
+    assert (override / "cron" / "jobs.json").exists()
 
 
-def test_agent_custom_config_workspace_does_not_migrate_legacy_cron(
+def test_agent_custom_config_workspace_migrates_legacy_cron(
     monkeypatch, tmp_path: Path
 ) -> None:
     config_file = tmp_path / "instance" / "config.json"
@@ -593,8 +593,8 @@ def test_agent_custom_config_workspace_does_not_migrate_legacy_cron(
 
     assert result.exit_code == 0
     assert seen["cron_store"] == custom_workspace / "cron" / "jobs.json"
-    assert legacy_file.exists()
-    assert not (custom_workspace / "cron" / "jobs.json").exists()
+    assert not legacy_file.exists()
+    assert (custom_workspace / "cron" / "jobs.json").exists()
 
 
 def test_agent_overrides_workspace_path(mock_agent_runtime):
@@ -732,7 +732,7 @@ def test_gateway_uses_workspace_directory_for_cron_store(monkeypatch, tmp_path: 
     assert seen["cron_store"] == config.workspace_path / "cron" / "jobs.json"
 
 
-def test_gateway_workspace_override_does_not_migrate_legacy_cron(
+def test_gateway_workspace_override_migrates_legacy_cron(
     monkeypatch, tmp_path: Path
 ) -> None:
     config_file = tmp_path / "instance" / "config.json"
@@ -770,11 +770,11 @@ def test_gateway_workspace_override_does_not_migrate_legacy_cron(
 
     assert isinstance(result.exception, _StopGatewayError)
     assert seen["cron_store"] == override / "cron" / "jobs.json"
-    assert legacy_file.exists()
-    assert not (override / "cron" / "jobs.json").exists()
+    assert not legacy_file.exists()
+    assert (override / "cron" / "jobs.json").exists()
 
 
-def test_gateway_custom_config_workspace_does_not_migrate_legacy_cron(
+def test_gateway_custom_config_workspace_migrates_legacy_cron(
     monkeypatch, tmp_path: Path
 ) -> None:
     config_file = tmp_path / "instance" / "config.json"
@@ -810,8 +810,8 @@ def test_gateway_custom_config_workspace_does_not_migrate_legacy_cron(
 
     assert isinstance(result.exception, _StopGatewayError)
     assert seen["cron_store"] == custom_workspace / "cron" / "jobs.json"
-    assert legacy_file.exists()
-    assert not (custom_workspace / "cron" / "jobs.json").exists()
+    assert not legacy_file.exists()
+    assert (custom_workspace / "cron" / "jobs.json").exists()
 
 
 def test_migrate_cron_store_moves_legacy_file(tmp_path: Path) -> None:
