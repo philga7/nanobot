@@ -10,7 +10,15 @@ from typing import Any, Callable, Coroutine
 
 from loguru import logger
 
-from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronRunRecord, CronSchedule, CronStore
+from nanobot.cron.types import (
+    CronJob,
+    CronJobState,
+    CronPayload,
+    CronPayloadKind,
+    CronRunRecord,
+    CronSchedule,
+    CronStore,
+)
 
 
 def _now_ms() -> int:
@@ -44,6 +52,19 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
             return None
 
     return None
+
+
+def _cron_payload_to_json(p: CronPayload) -> dict[str, Any]:
+    d: dict[str, Any] = {
+        "kind": p.kind,
+        "message": p.message,
+        "deliver": p.deliver,
+    }
+    if p.channel is not None:
+        d["channel"] = p.channel
+    if p.to is not None:
+        d["to"] = p.to
+    return d
 
 
 def _validate_schedule_for_add(schedule: CronSchedule) -> None:
@@ -159,13 +180,7 @@ class CronService:
                         "expr": j.schedule.expr,
                         "tz": j.schedule.tz,
                     },
-                    "payload": {
-                        "kind": j.payload.kind,
-                        "message": j.payload.message,
-                        "deliver": j.payload.deliver,
-                        "channel": j.payload.channel,
-                        "to": j.payload.to,
-                    },
+                    "payload": _cron_payload_to_json(j.payload),
                     "state": {
                         "nextRunAtMs": j.state.next_run_at_ms,
                         "lastRunAtMs": j.state.last_run_at_ms,
@@ -191,7 +206,7 @@ class CronService:
 
         self.store_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         self._last_mtime = self.store_path.stat().st_mtime
-    
+
     async def start(self) -> None:
         """Start the cron service."""
         self._running = True
@@ -320,11 +335,18 @@ class CronService:
         channel: str | None = None,
         to: str | None = None,
         delete_after_run: bool = False,
+        *,
+        payload_kind: CronPayloadKind = "agent_turn",
     ) -> CronJob:
         """Add a new job."""
         store = self._load_store()
         _validate_schedule_for_add(schedule)
         now = _now_ms()
+
+        if payload_kind == "shell_exec":
+            deliver = False
+            channel = None
+            to = None
 
         job = CronJob(
             id=str(uuid.uuid4())[:8],
@@ -332,7 +354,7 @@ class CronService:
             enabled=True,
             schedule=schedule,
             payload=CronPayload(
-                kind="agent_turn",
+                kind=payload_kind,
                 message=message,
                 deliver=deliver,
                 channel=channel,

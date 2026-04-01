@@ -1,5 +1,6 @@
 """Cron tool for scheduling reminders and tasks."""
 
+import re
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
@@ -7,6 +8,28 @@ from typing import Any
 from nanobot.agent.tools.base import Tool
 from nanobot.cron.service import CronService
 from nanobot.cron.types import CronJobState, CronSchedule
+
+# Single-line messages that start like a shell invocation become shell_exec jobs
+# (no agent turn, no chat delivery). Override with shell_exec=true/false on the tool call.
+_SHELL_LINE_START = re.compile(
+    r"^("
+    r"/usr/bin/env\s+(?:bash|sh)\s+"
+    r"|/bin/(?:ba)?sh\s+"
+    r"|/usr/bin/(?:ba)?sh\s+"
+    r"|(?:bash|sh|zsh|fish|dash)\s+"
+    r")",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _message_looks_like_shell_exec(message: str) -> bool:
+    s = message.strip()
+    if not s or "\n" in s:
+        return False
+    if _SHELL_LINE_START.match(s):
+        return True
+    first = s.split(None, 1)[0]
+    return first.startswith(("./", "../", "/"))
 
 
 class CronTool(Tool):
@@ -98,6 +121,15 @@ class CronTool(Tool):
                     ),
                 },
                 "job_id": {"type": "string", "description": "Job ID (for remove)"},
+                "shell_exec": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, schedule as a silent shell job (kind shell_exec, no delivery). "
+                        "If false, always schedule as an agent task even if the message looks like a "
+                        "shell command. If omitted, shell-style one-line messages (e.g. "
+                        "'bash /path/script.sh') are detected automatically."
+                    ),
+                },
             },
             "required": ["action"],
         }
@@ -111,12 +143,13 @@ class CronTool(Tool):
         tz: str | None = None,
         at: str | None = None,
         job_id: str | None = None,
+        shell_exec: bool | None = None,
         **kwargs: Any,
     ) -> str:
         if action == "add":
             if self._in_cron_context.get():
                 return "Error: cannot schedule new jobs from within a cron job execution"
-            return self._add_job(message, every_seconds, cron_expr, tz, at)
+            return self._add_job(message, every_seconds, cron_expr, tz, at, shell_exec)
         elif action == "list":
             return self._list_jobs()
         elif action == "remove":
@@ -130,10 +163,17 @@ class CronTool(Tool):
         cron_expr: str | None,
         tz: str | None,
         at: str | None,
+        shell_exec: bool | None,
     ) -> str:
         if not message:
             return "Error: message is required for add"
-        if not self._channel or not self._chat_id:
+        if shell_exec is True:
+            use_shell = True
+        elif shell_exec is False:
+            use_shell = False
+        else:
+            use_shell = _message_looks_like_shell_exec(message)
+        if not use_shell and (not self._channel or not self._chat_id):
             return "Error: no session context (channel/chat_id)"
         if tz and not cron_expr:
             return "Error: tz can only be used with cron_expr"
@@ -167,15 +207,25 @@ class CronTool(Tool):
         else:
             return "Error: either every_seconds, cron_expr, or at is required"
 
-        job = self._cron.add_job(
-            name=message[:30],
-            schedule=schedule,
-            message=message,
-            deliver=True,
-            channel=self._channel,
-            to=self._chat_id,
-            delete_after_run=delete_after,
-        )
+        if use_shell:
+            job = self._cron.add_job(
+                name=message[:30],
+                schedule=schedule,
+                message=message,
+                delete_after_run=delete_after,
+                payload_kind="shell_exec",
+            )
+        else:
+            job = self._cron.add_job(
+                name=message[:30],
+                schedule=schedule,
+                message=message,
+                deliver=True,
+                channel=self._channel,
+                to=self._chat_id,
+                delete_after_run=delete_after,
+                payload_kind="agent_turn",
+            )
         return f"Created job '{job.name}' (id: {job.id})"
 
     def _format_timing(self, schedule: CronSchedule) -> str:

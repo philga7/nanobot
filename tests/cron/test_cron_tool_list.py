@@ -266,7 +266,7 @@ def test_add_cron_job_defaults_to_tool_timezone(tmp_path) -> None:
     tool = _make_tool_with_tz(tmp_path, "Asia/Shanghai")
     tool.set_context("telegram", "chat-1")
 
-    result = tool._add_job("Morning standup", None, "0 8 * * *", None, None)
+    result = tool._add_job("Morning standup", None, "0 8 * * *", None, None, None)
 
     assert result.startswith("Created job")
     job = tool._cron.list_jobs()[0]
@@ -277,7 +277,7 @@ def test_add_at_job_uses_default_timezone_for_naive_datetime(tmp_path) -> None:
     tool = _make_tool_with_tz(tmp_path, "Asia/Shanghai")
     tool.set_context("telegram", "chat-1")
 
-    result = tool._add_job("Morning reminder", None, None, None, "2026-03-25T08:00:00")
+    result = tool._add_job("Morning reminder", None, None, None, "2026-03-25T08:00:00", None)
 
     assert result.startswith("Created job")
     job = tool._cron.list_jobs()[0]
