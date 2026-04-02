@@ -650,12 +650,24 @@ def gateway(
 
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
-        """Execute a cron job through the agent."""
+        """Execute a cron job through the agent or exec tool."""
         import os
 
         from nanobot.agent.tools.cron import CronTool
         from nanobot.agent.tools.message import MessageTool
+        from nanobot.agent.tools.shell import ExecTool
         from nanobot.utils.evaluator import evaluate_response
+
+        if job.payload.kind == "shell_exec":
+            exec_tool = agent.tools.get("exec")
+            if not isinstance(exec_tool, ExecTool):
+                raise RuntimeError(
+                    "shell_exec cron jobs require tools.exec enabled in config"
+                )
+            cmd = (job.payload.message or "").strip()
+            if not cmd:
+                return None
+            return await exec_tool.execute(command=cmd)
 
         message = job.payload.message or ""
         reminder_note = (
