@@ -113,6 +113,18 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
+class NewsStackIntegrationConfig(Base):
+    """Optional external news stack (deploy/news-stack). Empty URLs = not configured.
+
+    Populate as you bring up each service; HTTP client wiring can read these when implemented.
+    """
+
+    crucix_base_url: str = ""
+    office_base_url: str = ""
+    qdrant_url: str = ""
+    qdrant_api_key: str = ""
+
+
 class WebSearchConfig(Base):
     """Web search tool configuration."""
 
@@ -178,6 +190,10 @@ class Config(BaseSettings):
     api: ApiConfig = Field(default_factory=ApiConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    news_stack: NewsStackIntegrationConfig = Field(
+        default_factory=NewsStackIntegrationConfig,
+        description="External Crucix / 7-24 Office / Qdrant endpoints",
+    )
 
     @property
     def workspace_path(self) -> Path:

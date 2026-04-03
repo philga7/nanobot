@@ -1,0 +1,100 @@
+# External news stack: Qdrant + optional Crucix + optional 7/24 Office.
+# See README.md for usage.
+#
+# Default (memory only):
+#   docker compose up -d
+#
+# Crucix only (still starts qdrant — it has no profile; omit it only via explicit service list):
+#   docker compose --profile crucix up -d --build crucix
+#
+# Office only (starts qdrant + office; office waits for qdrant healthy):
+#   docker compose --profile office up -d --build office
+#
+# Everything (requires ./vendor from scripts/clone-vendors.sh):
+#   docker compose --profile full up -d --build
+#
+# Host ports bind to 127.0.0.1 only (VPS-friendly). Reach from other hosts via
+# SSH tunnel or a reverse proxy on the same machine.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    restart: unless-stopped
+    env_file:
+      - path: .env.qdrant
+        required: false
+    ports:
+      - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    networks: [news-stack]
+    # Official image is Debian-based with bash; no curl/wget required.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  crucix:
+    profiles: ["crucix", "full"]
+    build:
+      context: ./vendor/crucix
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CRUCIX_PORT:-3117}:3117"
+    env_file:
+      - path: ./vendor/crucix/.env
+        required: false
+    volumes:
+      - crucix_runs:/app/runs
+    networks: [news-stack]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:3117/api/health || exit 1",
+        ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  office:
+    profiles: ["office", "full"]
+    build:
+      context: .
+      dockerfile: Dockerfile.office
+    restart: unless-stopped
+    env_file:
+      - path: ./vendor/724-office/.env
+        required: false
+    ports:
+      - "127.0.0.1:${OFFICE_PORT:-8082}:8080"
+    volumes:
+      - office_workspace:/app/workspace
+    networks: [news-stack]
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf http://127.0.0.1:8080/health || exit 1",
+        ]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+
+networks:
+  news-stack:
+    driver: bridge
+
+volumes:
+  qdrant_storage:
+  crucix_runs:
+  office_workspace:

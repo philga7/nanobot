@@ -24,8 +24,28 @@ Primary request/response boundaries:
 
 ## Recommended Deployment Boundary
 
-- Keep service orchestration in a separate deployment repo.
+- Keep service orchestration in a separate deployment repo (or use the reference Compose bundle in-repo).
 - Keep nanobot core and interface contracts in this repo.
+
+### Reference Compose bundle
+
+A working **Qdrant**-first stack and optional **Crucix** + **7/24 Office** builds live under:
+
+- [`deploy/news-stack/`](../deploy/news-stack/README.md)
+
+See that README for `docker compose up` and `docker compose --profile full` instructions.
+
+**Secrets and env:** Compose only interpolates **ports** from the project `.env`. Per-service settings use optional `env_file` entries (Qdrant `.env.qdrant`, Crucix `vendor/crucix/.env`), while 7/24 Office is mainly **`config.json`** in the vendor tree (often bind-mounted at runtime so keys are not only baked into the image). See [Configuration and secrets (Docker)](../deploy/news-stack/README.md#configuration-and-secrets-docker) in the deploy README. For a consolidated key list and Bird/SearXNG boundaries, see [News stack env reference](./NEWS_STACK_ENV_REFERENCE.md).
+
+## Phased rollout: deploy, then Nanobot
+
+Recommended order:
+
+1. Bring up **Qdrant**, then **Crucix**, then **Office** using separate Compose profiles (`crucix` / `office` / `full`) — see [deploy/news-stack/README.md](../deploy/news-stack/README.md#phased-bring-up-one-service-at-a-time).
+2. Run `./scripts/smoke-stack.sh` from `deploy/news-stack/` to confirm loopback HTTP health before touching Nanobot.
+3. Add optional top-level **`news_stack`** to Nanobot `config.json` as you wire each integration (nested keys use the usual camelCase aliases: `crucixBaseUrl`, `officeBaseUrl`, `qdrantUrl`, `qdrantApiKey`). Empty strings mean “not configured”; Nanobot does not require them to start.
+
+There is no production HTTP client in this repo yet that calls those URLs; contracts and API metadata exist first so you can validate the stack and config shape in isolation.
 
 ## Suggested Runtime Wiring
 
