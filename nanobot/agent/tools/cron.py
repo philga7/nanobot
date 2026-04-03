@@ -120,6 +120,11 @@ class CronTool(Tool):
                         f"(e.g. '2026-02-12T10:30:00'). Naive values default to {self._default_timezone}."
                     ),
                 },
+                "deliver": {
+                    "type": "boolean",
+                    "description": "Whether to deliver the execution result to the user channel (default true)",
+                    "default": True
+                },
                 "job_id": {"type": "string", "description": "Job ID (for remove)"},
                 "shell_exec": {
                     "type": "boolean",
@@ -143,13 +148,14 @@ class CronTool(Tool):
         tz: str | None = None,
         at: str | None = None,
         job_id: str | None = None,
+        deliver: bool = True,
         shell_exec: bool | None = None,
         **kwargs: Any,
     ) -> str:
         if action == "add":
             if self._in_cron_context.get():
                 return "Error: cannot schedule new jobs from within a cron job execution"
-            return self._add_job(message, every_seconds, cron_expr, tz, at, shell_exec)
+            return self._add_job(message, every_seconds, cron_expr, tz, at, deliver, shell_exec)
         elif action == "list":
             return self._list_jobs()
         elif action == "remove":
@@ -163,7 +169,8 @@ class CronTool(Tool):
         cron_expr: str | None,
         tz: str | None,
         at: str | None,
-        shell_exec: bool | None,
+        deliver: bool = True,
+        shell_exec: bool | None = None,
     ) -> str:
         if not message:
             return "Error: message is required for add"
@@ -220,7 +227,7 @@ class CronTool(Tool):
                 name=message[:30],
                 schedule=schedule,
                 message=message,
-                deliver=True,
+                deliver=deliver,
                 channel=self._channel,
                 to=self._chat_id,
                 delete_after_run=delete_after,
