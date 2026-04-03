@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
+CronPayloadKind = Literal["system_event", "agent_turn", "shell_exec"]
+
 
 @dataclass
 class CronSchedule:
@@ -21,7 +23,7 @@ class CronSchedule:
 @dataclass
 class CronPayload:
     """What to do when the job runs."""
-    kind: Literal["system_event", "agent_turn"] = "agent_turn"
+    kind: CronPayloadKind = "agent_turn"
     message: str = ""
     # Deliver response to channel
     deliver: bool = False

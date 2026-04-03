@@ -15,6 +15,7 @@ from aiohttp import web
 from loguru import logger
 
 from nanobot.integrations.news_stack.api_context import build_api_path_process_direct_metadata
+from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 API_SESSION_KEY = "api:default"
 API_CHAT_ID = "default"
@@ -118,7 +119,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         http_request_id=_http_request_id(request),
     )
 
-    fallback_reply = "I've completed processing but have no response to give."
+    fallback_reply = EMPTY_FINAL_RESPONSE_MESSAGE
 
     try:
         async with session_lock:

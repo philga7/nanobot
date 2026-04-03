@@ -3,6 +3,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+pytest.importorskip("nio")
+pytest.importorskip("nh3")
+pytest.importorskip("mistune")
 from nio import RoomSendResponse
 
 from nanobot.channels.matrix import _build_matrix_text_content

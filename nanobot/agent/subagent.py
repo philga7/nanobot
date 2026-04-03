@@ -17,7 +17,7 @@ from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import ExecToolConfig
+from nanobot.config.schema import ExecToolConfig, WebToolsConfig
 from nanobot.providers.base import LLMProvider
 
 
@@ -44,23 +44,23 @@ class SubagentManager:
         provider: LLMProvider,
         workspace: Path,
         bus: MessageBus,
+        max_tool_result_chars: int,
         model: str | None = None,
-        web_search_config: "WebSearchConfig | None" = None,
-        web_proxy: str | None = None,
+        web_config: "WebToolsConfig | None" = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
         search_backend: str = "brave",
         search_searxng_url: str = "",
         search_max_results: int = 5,
     ):
-        from nanobot.config.schema import ExecToolConfig, WebSearchConfig
+        from nanobot.config.schema import ExecToolConfig
 
         self.provider = provider
         self.workspace = workspace
         self.bus = bus
         self.model = model or provider.get_default_model()
-        self.web_search_config = web_search_config or WebSearchConfig()
-        self.web_proxy = web_proxy
+        self.web_config = web_config or WebToolsConfig()
+        self.max_tool_result_chars = max_tool_result_chars
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
         self._search_backend = search_backend or "brave"
@@ -128,9 +128,9 @@ class SubagentManager:
                     restrict_to_workspace=self.restrict_to_workspace,
                     path_append=self.exec_config.path_append,
                 ))
-            tools.register(WebSearchTool(config=self.web_search_config, proxy=self.web_proxy))
-            tools.register(WebFetchTool(proxy=self.web_proxy))
-
+            if self.web_config.enable:
+                tools.register(WebSearchTool(config=self.web_config.search, proxy=self.web_config.proxy))
+                tools.register(WebFetchTool(proxy=self.web_config.proxy))
             system_prompt = self._build_subagent_prompt()
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
@@ -142,6 +142,7 @@ class SubagentManager:
                 tools=tools,
                 model=self.model,
                 max_iterations=15,
+                max_tool_result_chars=self.max_tool_result_chars,
                 hook=_SubagentHook(task_id),
                 max_iterations_message="Task completed but no final response was generated.",
                 error_message=None,
