@@ -1,1 +1,1 @@
-"""Optional service packages (e.g. news pipeline)."""
+"""Optional service packages."""

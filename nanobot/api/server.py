@@ -14,10 +14,22 @@ from typing import Any
 from aiohttp import web
 from loguru import logger
 
+from nanobot.integrations.news_stack.api_context import build_api_path_process_direct_metadata
 from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 API_SESSION_KEY = "api:default"
 API_CHAT_ID = "default"
+
+
+def _http_request_id(request: web.Request) -> str | None:
+    """Return client request id from headers when present (string only)."""
+    try:
+        raw = request.headers.get("X-Request-Id") or request.headers.get("X-Request-ID")
+    except Exception:
+        return None
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +112,14 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
 
     logger.info("API request session_key={} content={}", session_key, user_content[:80])
 
-    _FALLBACK = EMPTY_FINAL_RESPONSE_MESSAGE
+    stack_meta = build_api_path_process_direct_metadata(
+        session_key=session_key,
+        chat_id=API_CHAT_ID,
+        user_message=str(user_content),
+        http_request_id=_http_request_id(request),
+    )
+
+    fallback_reply = EMPTY_FINAL_RESPONSE_MESSAGE
 
     try:
         async with session_lock:
@@ -111,6 +130,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                         session_key=session_key,
                         channel="api",
                         chat_id=API_CHAT_ID,
+                        metadata=stack_meta,
                     ),
                     timeout=timeout_s,
                 )
@@ -127,6 +147,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                             session_key=session_key,
                             channel="api",
                             chat_id=API_CHAT_ID,
+                            metadata=stack_meta,
                         ),
                         timeout=timeout_s,
                     )
@@ -136,7 +157,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                             "Empty response after retry for session {}, using fallback",
                             session_key,
                         )
-                        response_text = _FALLBACK
+                        response_text = fallback_reply
 
             except asyncio.TimeoutError:
                 return _error_json(504, f"Request timed out after {timeout_s}s")

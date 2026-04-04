@@ -17,6 +17,7 @@ from nanobot.api.server import (
     create_app,
     handle_chat_completions,
 )
+from nanobot.integrations.news_stack.api_context import build_api_path_process_direct_metadata
 
 try:
     from aiohttp.test_utils import TestClient, TestServer
@@ -197,6 +198,12 @@ async def test_successful_request_uses_fixed_api_session(aiohttp_client, mock_ag
         session_key=API_SESSION_KEY,
         channel="api",
         chat_id=API_CHAT_ID,
+        metadata=build_api_path_process_direct_metadata(
+            session_key=API_SESSION_KEY,
+            chat_id=API_CHAT_ID,
+            user_message="hello",
+            http_request_id=None,
+        ),
     )
 
 
@@ -205,7 +212,7 @@ async def test_successful_request_uses_fixed_api_session(aiohttp_client, mock_ag
 async def test_followup_requests_share_same_session_key(aiohttp_client) -> None:
     call_log: list[str] = []
 
-    async def fake_process(content, session_key="", channel="", chat_id=""):
+    async def fake_process(content, session_key="", channel="", chat_id="", **kwargs):
         call_log.append(session_key)
         return f"reply to {content}"
 
@@ -236,7 +243,7 @@ async def test_followup_requests_share_same_session_key(aiohttp_client) -> None:
 async def test_fixed_session_requests_are_serialized(aiohttp_client) -> None:
     order: list[str] = []
 
-    async def slow_process(content, session_key="", channel="", chat_id=""):
+    async def slow_process(content, session_key="", channel="", chat_id="", **kwargs):
         order.append(f"start:{content}")
         await asyncio.sleep(0.1)
         order.append(f"end:{content}")
@@ -312,6 +319,37 @@ async def test_multimodal_content_extracts_text(aiohttp_client, mock_agent) -> N
         session_key=API_SESSION_KEY,
         channel="api",
         chat_id=API_CHAT_ID,
+        metadata=build_api_path_process_direct_metadata(
+            session_key=API_SESSION_KEY,
+            chat_id=API_CHAT_ID,
+            user_message="describe this",
+            http_request_id=None,
+        ),
+    )
+
+
+@pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")
+@pytest.mark.asyncio
+async def test_x_request_id_propagates_to_process_direct_metadata(aiohttp_client, mock_agent) -> None:
+    app = create_app(mock_agent, model_name="test-model")
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "ping"}]},
+        headers={"X-Request-Id": "client-req-99"},
+    )
+    assert resp.status == 200
+    mock_agent.process_direct.assert_called_once_with(
+        content="ping",
+        session_key=API_SESSION_KEY,
+        channel="api",
+        chat_id=API_CHAT_ID,
+        metadata=build_api_path_process_direct_metadata(
+            session_key=API_SESSION_KEY,
+            chat_id=API_CHAT_ID,
+            user_message="ping",
+            http_request_id="client-req-99",
+        ),
     )
 
 
@@ -320,7 +358,7 @@ async def test_multimodal_content_extracts_text(aiohttp_client, mock_agent) -> N
 async def test_empty_response_retry_then_success(aiohttp_client) -> None:
     call_count = 0
 
-    async def sometimes_empty(content, session_key="", channel="", chat_id=""):
+    async def sometimes_empty(content, session_key="", channel="", chat_id="", **kwargs):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -351,7 +389,7 @@ async def test_empty_response_falls_back(aiohttp_client) -> None:
 
     call_count = 0
 
-    async def always_empty(content, session_key="", channel="", chat_id=""):
+    async def always_empty(content, session_key="", channel="", chat_id="", **kwargs):
         nonlocal call_count
         call_count += 1
         return ""

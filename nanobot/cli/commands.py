@@ -1335,45 +1335,6 @@ def status():
 
 
 # ============================================================================
-# News Commands
-# ============================================================================
-
-news_app = typer.Typer(help="OSINT-driven breaking news pipeline")
-app.add_typer(news_app, name="news")
-
-
-@news_app.command("scheduled")
-def news_scheduled(
-    deliver: bool = typer.Option(False, "--deliver", help="Deliver results to Slack/ntfy"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Run without delivery or history writes"),
-):
-    """Run the scheduled news pipeline sweep."""
-    from nanobot.news.pipeline import run_scheduled_news_job
-
-    console.print("[cyan]Running news pipeline...[/cyan]")
-    result = run_scheduled_news_job(dry_run=dry_run)
-    console.print(
-        f"[green]Done[/green] — {result['total_items']} items found, "
-        f"{result['total_delivered']} delivered"
-    )
-
-
-@news_app.command("analyze")
-def news_analyze(
-    url_or_text: str = typer.Argument(..., help="URL or story description to analyze"),
-):
-    """Deep-dive analysis of a single story."""
-    from nanobot.news.agent import analyze
-
-    console.print("[cyan]Analyzing story...[/cyan]")
-    result = analyze(url_or_text)
-    if "error" in result:
-        console.print(f"[red]Error:[/red] {result['error']}")
-        raise typer.Exit(1)
-    console.print(Markdown(result["analysis"]))
-
-
-# ============================================================================
 # OAuth Login
 # ============================================================================
 
