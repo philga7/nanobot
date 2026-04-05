@@ -35,10 +35,10 @@ WORKDIR /app/services/mcp-ts-sdk
 RUN corepack enable && pnpm install && pnpm --filter @modelcontextprotocol/server build
 
 # Build the WhatsApp bridge
-RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
-
 WORKDIR /app/bridge
-RUN npm install && npm run build
+RUN git config --global --add url."https://github.com/".insteadOf ssh://git@github.com/ && \
+    git config --global --add url."https://github.com/".insteadOf git@github.com: && \
+    npm install && npm run build
 
 # Twitter MCP server is run via uvx at runtime (mcp-twikit)
 
@@ -50,7 +50,7 @@ RUN npm install && npm run build
 WORKDIR /app/services/library-mcp
 RUN uv pip install --system --no-cache fastmcp
 
-    WORKDIR /app
+WORKDIR /app
 
 # Create config directory
 RUN mkdir -p /root/.nanobot
