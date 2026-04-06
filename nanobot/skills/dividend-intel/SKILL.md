@@ -92,17 +92,33 @@ for t in tickers:
         else:
             ex_dt = None
             days_out = None
+        rate = info.get('dividendRate') or 0
+        price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
+        raw_yld = info.get('dividendYield') or 0
+        if rate > 0 and price > 0:
+            yield_pct = round(rate / price * 100, 2)
+        else:
+            yield_pct = round(raw_yld, 2)
+        payout_pct = round((info.get('payoutRatio') or 0) * 100, 1)
+        div_type = meta.get('div_type', '')
+        payout_note = ''
+        if payout_pct > 100 and div_type in ('reit', 'bdc'):
+            payout_note = 'use FFO/NII, not EPS'
+        elif payout_pct > 100:
+            payout_note = 'check FCF payout — may be GAAP distortion'
         row = {
             'ticker': t,
             'name': meta.get('name') or info.get('shortName', ''),
             'shares': meta.get('shares'),
-            'yield_pct': round(info.get('dividendYield') or 0, 2),
-            'forward_annual': info.get('dividendRate'),
+            'yield_pct': yield_pct,
+            'forward_annual': rate if rate else None,
             'ex_date': ex_dt.strftime('%Y-%m-%d') if ex_dt else 'unknown',
             'days_until_ex': days_out,
-            'payout_ratio': round((info.get('payoutRatio') or 0) * 100, 1),
+            'payout_ratio': payout_pct,
             'in_window': days_out is not None and 0 <= days_out <= window,
         }
+        if payout_note:
+            row['payout_note'] = payout_note
         if state:
             row['price'] = state.get('price')
             row['sma200'] = state.get('sma200')
@@ -111,7 +127,7 @@ for t in tickers:
         results.append(row)
     except Exception as e:
         results.append({'ticker': t, 'error': str(e)})
-out = [r for r in results if r.get('in_window', True)]
+out = [r for r in results if r.get('in_window', False)]
 out.sort(key=lambda r: r.get('days_until_ex') or 9999)
 if buy_day:
     for r in out:
@@ -181,7 +197,10 @@ for t in universe:
         continue
     try:
         info = yf.Ticker(t).info
-        yld = info.get('dividendYield') or 0
+        rate = info.get('dividendRate') or 0
+        price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
+        raw_yld = info.get('dividendYield') or 0
+        yld = round(rate / price * 100, 2) if rate > 0 and price > 0 else round(raw_yld, 2)
         payout = (info.get('payoutRatio') or 0) * 100
         if yld >= min_yield and 0 < payout <= max_payout:
             results.append({
