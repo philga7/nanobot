@@ -64,6 +64,11 @@ python3 -c "
 import os, yfinance as yf, json, sys
 from datetime import datetime, timezone
 
+OPTION_INCOME_ETFS = {
+    'XDTE','QDTE','YMAX','ULTY','JEPI','JEPQ','DIVO',
+    'XYLD','QYLD','RYLD','SDIV','TSLY','NVDY','AMZY',
+}
+
 path = os.environ.get('DIVIDEND_INTEL_PORTFOLIO', os.path.expanduser('~/.wrenvps/dividend-intel/portfolio.json'))
 with open(path, encoding='utf-8') as f:
     data = json.load(f)
@@ -82,6 +87,7 @@ results = []
 for t in tickers:
     meta = holdings.get(t, {})
     state = meta.get('state', {})
+    is_option_etf = t in OPTION_INCOME_ETFS
     try:
         tk = yf.Ticker(t)
         info = tk.info
@@ -92,6 +98,11 @@ for t in tickers:
         else:
             ex_dt = None
             days_out = None
+        if days_out is not None and days_out < 0:
+            ex_date_str = 'upcoming TBD'
+            days_out = None
+        else:
+            ex_date_str = ex_dt.strftime('%Y-%m-%d') if ex_dt else 'unknown'
         rate = info.get('dividendRate') or 0
         price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
         raw_yld = info.get('dividendYield') or 0
@@ -112,11 +123,14 @@ for t in tickers:
             'shares': meta.get('shares'),
             'yield_pct': yield_pct,
             'forward_annual': rate if rate else None,
-            'ex_date': ex_dt.strftime('%Y-%m-%d') if ex_dt else 'unknown',
+            'ex_date': ex_date_str,
             'days_until_ex': days_out,
             'payout_ratio': payout_pct,
             'in_window': days_out is not None and 0 <= days_out <= window,
         }
+        if is_option_etf:
+            row['yield_type'] = 'option-premium'
+            row['yield_note'] = 'yield from option premium decay — not a traditional dividend; distributions erode NAV'
         if payout_note:
             row['payout_note'] = payout_note
         if state:
@@ -127,17 +141,23 @@ for t in tickers:
         results.append(row)
     except Exception as e:
         results.append({'ticker': t, 'error': str(e)})
-out = [r for r in results if r.get('in_window', False)]
-out.sort(key=lambda r: r.get('days_until_ex') or 9999)
+standard = [r for r in results if r.get('in_window', False) and not r.get('yield_type')]
+option_etfs = [r for r in results if r.get('in_window', False) and r.get('yield_type') == 'option-premium']
+standard.sort(key=lambda r: r.get('days_until_ex') or 9999)
+option_etfs.sort(key=lambda r: r.get('days_until_ex') or 9999)
 if buy_day:
-    for r in out:
+    for r in standard:
         if r.get('buy_candidate'):
             r['note'] = f'Buy candidate per strategy — check if today is {buy_day}'
-print(json.dumps(out, indent=2))
+print(json.dumps({'ex_div_calendar': standard, 'option_income_etfs': option_etfs}, indent=2))
 " "60"
 ```
 
-Arg: `window_days`. Reads `holdings` first, falls back to `portfolio` array. `dividend_calendar` is this same command — results are already sorted by `days_until_ex`.
+Arg: `window_days`. Reads `holdings` first, falls back to `portfolio` array. Output has two sections:
+- `ex_div_calendar` — standard dividend holdings with upcoming ex-dates
+- `option_income_etfs` — XDTE/QDTE/YMAX/ULTY etc. flagged separately with `yield_note`
+
+Stale past ex-dates (`days_until_ex < 0`) are silently replaced with `"upcoming TBD"` and excluded from both sections.
 
 ---
 
