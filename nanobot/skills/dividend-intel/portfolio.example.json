@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "owner": "your_name",
+  "strategy": {
+    "buyCondition": "price < SMA200",
+    "sellCondition": "price > SMA200",
+    "buyDay": "Thursday",
+    "notes": "Only buy on Thursdays except extenuating circumstances (special dividends, etc.)"
+  },
+  "holdings": {
+    "O": {
+      "shares": 100,
+      "name": "Realty Income Corporation",
+      "div_type": "reit",
+      "state": {
+        "price": 66.49,
+        "sma200": 57.01,
+        "above": true,
+        "pct_diff": 16.6
+      }
+    },
+    "VZ": {
+      "shares": 200,
+      "name": "Verizon Communications",
+      "div_type": "non-qualified",
+      "state": {
+        "price": 48.93,
+        "sma200": 41.11,
+        "above": true,
+        "pct_diff": 19.0
+      }
+    },
+    "KO": {
+      "shares": 50,
+      "name": "Coca-Cola Company",
+      "div_type": "qualified",
+      "state": {
+        "price": 79.56,
+        "sma200": 69.61,
+        "above": true,
+        "pct_diff": 14.3
+      }
+    },
+    "ARCC": {
+      "shares": 150,
+      "name": "Ares Capital Corporation",
+      "div_type": "bdc",
+      "state": {
+        "price": 19.30,
+        "sma200": 20.46,
+        "above": false,
+        "pct_diff": -5.7
+      }
+    }
+  },
+  "screener_universe": ["O", "VZ", "KO", "ARCC", "MAIN", "ABBV", "XOM", "T", "MO", "JNJ"],
+  "exclude_from_screener": [],
+  "lastUpdated": "2026-04-06T00:00:00Z"
+}

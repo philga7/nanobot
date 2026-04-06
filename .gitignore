@@ -27,3 +27,7 @@ uv.lock
 
 # Local Cursor IDE state and plans (keep migration commits focused)
 .cursor/
+
+# Personal financial data — never commit real holdings
+**/portfolio.json
+!**/portfolio.example.json
