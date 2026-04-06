@@ -372,6 +372,43 @@ Special dividends are irregular, underfollowed by retail investors, and represen
 
 ---
 
+## SMA200 State Refresh Cron
+
+Run weekly to keep `holdings[ticker].state` current. Required for accurate buy signals.
+
+- **Schedule:** Monday 3:00 AM ET (`0 3 * * 1`, `America/New_York`)
+- **Script:** `scripts/dividend-state-refresh.sh` (install to `~/.wrenvps/scripts/`)
+- **What it does:** Fetches 200-day SMA, current price, above/below status for all holdings
+- **Output:** Silent on success, logs errors to stderr on failure
+- **Why it matters:** `portfolio_sweep` buy signals depend on current SMA200 state
+
+### Setup
+
+1. Copy and install the script:
+
+```bash
+mkdir -p ~/.wrenvps/scripts
+cp /path/to/skill/scripts/dividend-state-refresh.sh ~/.wrenvps/scripts/
+chmod +x ~/.wrenvps/scripts/dividend-state-refresh.sh
+```
+
+2. Register the cron job via the nanobot cron tool:
+
+```
+Name: dividend_state_refresh
+cron_expr: 0 3 * * 1
+tz: America/New_York
+message: bash ~/.wrenvps/scripts/dividend-state-refresh.sh
+deliver: false
+shell_exec: true
+```
+
+Or via the agent (tell the agent):
+
+> "Add a cron job named dividend_state_refresh to run `bash ~/.wrenvps/scripts/dividend-state-refresh.sh` on schedule `0 3 * * 1` in timezone `America/New_York`, silent, no delivery."
+
+---
+
 ## Notes
 
 - SEC EDGAR requests require a `User-Agent` header with contact info. The commands above use `dividend-intel/1.0 (nanobot@local)`.
