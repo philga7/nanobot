@@ -43,6 +43,10 @@ services:
       context: ./vendor/crucix
       dockerfile: Dockerfile
     restart: unless-stopped
+    # Linux parity with Docker Desktop: allow containers to reach host services
+    # (for example host Ollama at OLLAMA_BASE_URL=http://host.docker.internal:11434).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:${CRUCIX_PORT:-3117}:3117"
     env_file:
