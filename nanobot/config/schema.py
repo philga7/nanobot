@@ -28,6 +28,7 @@ class ChannelsConfig(Base):
     send_progress: bool = True  # stream agent's text progress to the channel
     send_tool_hints: bool = False  # stream tool-call hints (e.g. read_file("…"))
     send_max_retries: int = Field(default=3, ge=0, le=10)  # Max delivery attempts (initial send included)
+    transcription_provider: str = "groq"  # Voice transcription backend: "groq" or "openai"
 
 
 class DreamConfig(Base):
@@ -168,6 +169,7 @@ class WebSearchConfig(Base):
     api_key: str = ""
     base_url: str = ""  # SearXNG base URL
     max_results: int = 5
+    timeout: int = 30  # Wall-clock timeout (seconds) for search operations
 
 
 class WebToolsConfig(Base):
@@ -194,6 +196,7 @@ class ExecToolConfig(Base):
     enable: bool = True
     timeout: int = 60
     path_append: str = ""
+    sandbox: str = ""  # sandbox backend: "" (none) or "bwrap"
 
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""

@@ -41,6 +41,10 @@ def _message_looks_like_shell_exec(message: str) -> bool:
 @tool_parameters(
     tool_parameters_schema(
         action=StringSchema("Action to perform", enum=["add", "list", "remove"]),
+        name=StringSchema(
+            "Optional short human-readable label for the job "
+            "(e.g., 'weather-monitor', 'daily-standup'). Defaults to first 30 chars of message."
+        ),
         message=StringSchema(
             "Instruction for the agent to execute when the job triggers "
             "(e.g., 'Send a reminder to WeChat: xxx' or 'Check system status and report')"
@@ -130,6 +134,7 @@ class CronTool(Tool):
     async def execute(
         self,
         action: str,
+        name: str | None = None,
         message: str = "",
         every_seconds: int | None = None,
         cron_expr: str | None = None,
@@ -143,7 +148,7 @@ class CronTool(Tool):
         if action == "add":
             if self._in_cron_context.get():
                 return "Error: cannot schedule new jobs from within a cron job execution"
-            return self._add_job(message, every_seconds, cron_expr, tz, at, deliver, shell_exec)
+            return self._add_job(name, message, every_seconds, cron_expr, tz, at, deliver, shell_exec)
         elif action == "list":
             return self._list_jobs()
         elif action == "remove":
@@ -152,6 +157,7 @@ class CronTool(Tool):
 
     def _add_job(
         self,
+        name: str | None,
         message: str,
         every_seconds: int | None,
         cron_expr: str | None,
@@ -204,7 +210,7 @@ class CronTool(Tool):
 
         if use_shell:
             job = self._cron.add_job(
-                name=message[:30],
+                name=name or message[:30],
                 schedule=schedule,
                 message=message,
                 delete_after_run=delete_after,
@@ -212,7 +218,7 @@ class CronTool(Tool):
             )
         else:
             job = self._cron.add_job(
-                name=message[:30],
+                name=name or message[:30],
                 schedule=schedule,
                 message=message,
                 deliver=deliver,
