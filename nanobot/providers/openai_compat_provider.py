@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib.util
+import json
 import os
 import secrets
 import string
@@ -224,13 +225,46 @@ class OpenAICompatProvider(LLMProvider):
                     if not isinstance(tc, dict):
                         normalized.append(tc)
                         continue
-                    tc_clean = dict(tc)
+                    tc_clean = self._normalize_tool_call(tc)
                     tc_clean["id"] = map_id(tc_clean.get("id"))
                     normalized.append(tc_clean)
                 clean["tool_calls"] = normalized
             if "tool_call_id" in clean and clean["tool_call_id"]:
                 clean["tool_call_id"] = map_id(clean["tool_call_id"])
         return sanitized
+
+    @staticmethod
+    def _normalize_tool_arguments(arguments: Any) -> str:
+        """Normalize tool arguments to a strict JSON object string."""
+        if isinstance(arguments, dict):
+            return json.dumps(arguments, ensure_ascii=False)
+        if isinstance(arguments, str):
+            raw = arguments.strip()
+            if not raw:
+                return "{}"
+            try:
+                parsed = json_repair.loads(raw)
+            except Exception:
+                return "{}"
+            if isinstance(parsed, dict):
+                return json.dumps(parsed, ensure_ascii=False)
+            return "{}"
+        return "{}"
+
+    @classmethod
+    def _normalize_tool_call(cls, tool_call: dict[str, Any]) -> dict[str, Any]:
+        """Normalize nested OpenAI-style tool call payload for strict providers."""
+        tc_clean = dict(tool_call)
+        tc_clean["type"] = "function"
+
+        fn = tc_clean.get("function")
+        fn_clean = dict(fn) if isinstance(fn, dict) else {}
+        if not isinstance(fn_clean.get("name"), str):
+            fallback_name = tc_clean.get("name")
+            fn_clean["name"] = fallback_name if isinstance(fallback_name, str) else ""
+        fn_clean["arguments"] = cls._normalize_tool_arguments(fn_clean.get("arguments"))
+        tc_clean["function"] = fn_clean
+        return tc_clean
 
     # ------------------------------------------------------------------
     # Build kwargs
