@@ -163,29 +163,469 @@ Stale past ex-dates (`days_until_ex < 0`) are silently replaced with `"upcoming 
 
 ## 2. special_dividend_scanner
 
-Scan SEC EDGAR 8-K filings for special/extra dividend announcements in the last N days.
+Multi-source, layered scanner for special/extra dividend signals. Three layers: reactive (formal announcements), reactive (press releases), and proactive (leading indicators). Sources degrade gracefully — if one fails, others still run.
 
-### Reactive layer — announced specials
+**Known EFTS bug:** `startdt` alone is not respected. All EFTS calls use both `startdt` AND `enddt` and post-filter by `file_date` in Python.
 
-```bash
-SINCE=$(python3 -c "from datetime import datetime,timedelta; print((datetime.now()-timedelta(days=14)).strftime('%Y-%m-%d'))")
-curl -s -H "User-Agent: dividend-intel/1.0 (nanobot@local)" \
-  "https://efts.sec.gov/LATEST/search-index?q=%22special+dividend%22+%22per+share%22&dateRange=custom&startdt=${SINCE}&forms=8-K"
+```python
+python3 << 'SCANNER_EOF'
+import json, os, re, time, urllib.request, urllib.parse
+from datetime import datetime, timedelta, timezone
+
+WINDOW_DAYS    = 7    # reactive layers lookback
+PROACTIVE_DAYS = 30   # proactive layers lookback
+USER_AGENT     = "dividend-intel/1.0 contact@example.com"
+HEADERS        = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+
+def fetch(url, retries=2, delay=2):
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return json.loads(r.read().decode())
+        except Exception:
+            if attempt < retries:
+                time.sleep(delay)
+            else:
+                return None
+
+def fetch_xml(url):
+    try:
+        req = urllib.request.Request(url, headers={**HEADERS, "Accept": "application/rss+xml,text/xml"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.read().decode(errors="replace")
+    except Exception:
+        return None
+
+def since(days):
+    return (datetime.now(tz=timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+
+def today():
+    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+def within_window(date_str, days):
+    """Return True if date_str (YYYY-MM-DD or Atom ISO-8601) is within the last N days."""
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            s = date_str[:19] if "T" in date_str else date_str[:10]
+            dt = datetime.strptime(s, fmt[:len(s)])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return (datetime.now(tz=timezone.utc) - dt).days <= days
+        except ValueError:
+            continue
+    return False
+
+def parse_efts_hit(h):
+    """
+    Extract normalised fields from a SEC EFTS search-index hit.
+    EFTS _source uses: ciks[], display_names[], adsh, file_date
+    (NOT entity_id / entity_name / accession_no)
+    """
+    src = h.get("_source", {})
+    ciks = src.get("ciks", [])
+    cik  = ciks[0].lstrip("0") if ciks else ""
+    cik_raw = ciks[0] if ciks else ""
+
+    # display_names format: "COMPANY NAME  (TICKER)  (CIK 0000NNNNNN)"
+    display_names = src.get("display_names", [])
+    name = ""
+    ticker = ""
+    if display_names:
+        dn = display_names[0]
+        # Extract ticker
+        m = re.search(r"\(([A-Z]{1,5})\)", dn)
+        if m:
+            ticker = m.group(1)
+        # Company name is everything before first '('
+        name = dn.split("(")[0].strip()
+
+    adsh = src.get("adsh", "")
+    file_date = src.get("file_date", "")
+
+    link = ""
+    if cik and adsh:
+        acc_nodash = adsh.replace("-", "")
+        link = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_nodash}/{adsh}-index.htm"
+
+    return name, ticker, cik, cik_raw, adsh, file_date, link
+
+def cik_to_ticker(cik_raw):
+    """Resolve 10-digit CIK to ticker via SEC submissions API. Returns '' on failure."""
+    cik_padded = str(cik_raw).zfill(10)
+    data = fetch(f"https://data.sec.gov/submissions/CIK{cik_padded}.json")
+    time.sleep(0.4)
+    if data:
+        tickers = data.get("tickers", [])
+        return tickers[0] if tickers else ""
+    return ""
+
+# ── Layer 1a: SEC EDGAR Atom feed (primary reactive, reliable dates) ─────────
+# Uses output=atom — the correct endpoint; plain browse URL returns HTML.
+def layer1_edgar_atom(window=WINDOW_DAYS):
+    results = []
+    url = ("https://www.sec.gov/cgi-bin/browse-edgar"
+           "?action=getcurrent&type=8-K&dateb=&owner=include&count=40&output=atom")
+    xml = fetch_xml(url)
+    if not xml:
+        return results
+    entries = re.findall(r"<entry>(.*?)</entry>", xml, re.DOTALL)
+    kws = ["special dividend", "extra dividend", "one-time dividend", "cash distribution",
+           "per share", "extraordinary dividend"]
+    for entry in entries:
+        title   = re.search(r"<title>(.*?)</title>", entry, re.DOTALL)
+        link    = re.search(r'<link[^>]+href="([^"]+)"', entry, re.DOTALL)
+        summary = re.search(r"<summary[^>]*>(.*?)</summary>", entry, re.DOTALL)
+        updated = re.search(r"<updated>(.*?)</updated>", entry, re.DOTALL)
+        title_s   = (title.group(1)   if title   else "").strip()
+        link_s    = (link.group(1)    if link    else "").strip()
+        summary_s = (summary.group(1) if summary else "").strip()
+        upd_s     = (updated.group(1) if updated else "").strip()
+        # Strip HTML entities from summary
+        summary_s = re.sub(r"&lt;.*?&gt;", " ", summary_s)
+        combined  = (title_s + " " + summary_s).lower()
+        if not any(kw in combined for kw in kws):
+            continue
+        if upd_s and not within_window(upd_s, window):
+            continue
+        # CIK is in the filing URL path: /Archives/edgar/data/NNNNN/
+        cik_m  = re.search(r"/data/(\d+)/", link_s)
+        cik    = cik_m.group(1) if cik_m else ""
+        # Company name: "FORM - Company Name (CIK) (Filer)"
+        name_m = re.search(r"^8-K[/A]* - (.+?) \(", title_s)
+        name   = name_m.group(1).strip() if name_m else title_s
+        results.append({
+            "source": "edgar_atom",
+            "company": name,
+            "cik": cik,
+            "ticker": "",
+            "date": upd_s[:10],
+            "link": link_s,
+            "confidence": "HIGH",
+            "signal_type": "announced",
+            "notes": "SEC EDGAR Atom feed — formal 8-K filing",
+        })
+    return results
+
+# ── Layer 1b: SEC EFTS with startdt+enddt bug workaround ────────────────────
+# Bug: startdt alone is not reliably respected. Fix: always pass both startdt
+# AND enddt, then post-filter by file_date in Python.
+def layer1_edgar_efts(window=WINDOW_DAYS):
+    results = []
+    start = since(window)
+    end   = today()
+    queries = [
+        ("%22special+dividend%22+%22per+share%22", "special dividend + per share"),
+        ("%22extra+dividend%22",                    "extra dividend"),
+        ("%22one-time+dividend%22",                 "one-time dividend"),
+        ("%22extraordinary+dividend%22",            "extraordinary dividend"),
+    ]
+    seen = set()
+    for q_enc, label in queries:
+        url = (f"https://efts.sec.gov/LATEST/search-index?q={q_enc}"
+               f"&forms=8-K&dateRange=custom&startdt={start}&enddt={end}&from=0&size=20")
+        data = fetch(url)
+        time.sleep(2)
+        if not data:
+            continue
+        hits = data.get("hits", {}).get("hits", [])
+        for h in hits:
+            name, ticker, cik, cik_raw, adsh, file_date, link = parse_efts_hit(h)
+            if file_date and not within_window(file_date, window):
+                continue  # post-filter: EFTS startdt bug workaround
+            key = adsh or (name + file_date)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({
+                "source": "edgar_efts",
+                "company": name,
+                "cik": cik_raw,
+                "ticker": ticker,
+                "date": file_date,
+                "link": link,
+                "confidence": "HIGH",
+                "signal_type": "announced",
+                "notes": f"EFTS query: {label}",
+            })
+    return results
+
+# ── Layer 2: SEC EFTS broader dividend keyword scan (press-release proxy) ────
+# Replaces third-party RSS feeds (Benzinga/GlobeNewswire/StockAnalysis are
+# unreliable as public RSS endpoints). EFTS full-text covers 8-K press
+# releases (Item 7.01/8.01) which precede or accompany formal declarations.
+def layer2_efts_broad(window=WINDOW_DAYS):
+    results = []
+    start = since(window)
+    end   = today()
+    queries = [
+        ("%22special+cash+dividend%22",            "special cash dividend"),
+        ("%22return+of+capital%22+%22per+share%22", "return of capital per share"),
+        ("%22one-time+cash+distribution%22",        "one-time cash distribution"),
+    ]
+    seen = set()
+    for q_enc, label in queries:
+        url = (f"https://efts.sec.gov/LATEST/search-index?q={q_enc}"
+               f"&forms=8-K&dateRange=custom&startdt={start}&enddt={end}&from=0&size=20")
+        data = fetch(url)
+        time.sleep(2)
+        if not data:
+            continue
+        hits = data.get("hits", {}).get("hits", [])
+        for h in hits:
+            name, ticker, cik, cik_raw, adsh, file_date, link = parse_efts_hit(h)
+            if file_date and not within_window(file_date, window):
+                continue
+            key = adsh or (name + file_date)
+            if key in seen:
+                continue
+            seen.add(key)
+            # Item 8.01/9.01 = management commentary (lower confidence)
+            items_list = h.get("_source", {}).get("items", [])
+            is_commentary = any(i in ("8.01", "9.01") for i in items_list)
+            results.append({
+                "source": "edgar_efts_broad",
+                "company": name,
+                "cik": cik_raw,
+                "ticker": ticker,
+                "date": file_date,
+                "link": link,
+                "confidence": "LOW" if is_commentary else "MEDIUM",
+                "signal_type": "press_release",
+                "notes": (f"8-K Items {items_list} — EFTS broad query: {label}."
+                          + (" Item 8.01/9.01 = commentary only, may not formalize." if is_commentary else "")),
+            })
+    return results
+
+# ── Layer 3a: SEC 13D/13G activist filings ───────────────────────────────────
+def layer3_activist_13d(window=PROACTIVE_DAYS):
+    results = []
+    start = since(window)
+    end   = today()
+    activist_kws = ["special dividend", "return of capital", "net cash", "liquidation",
+                    "asset sale proceeds", "distribution to shareholders"]
+    for form_param, form_label in (("SC+13D", "SC 13D"), ("SC+13G", "SC 13G")):
+        url = (f"https://efts.sec.gov/LATEST/search-index?q=%22return+of+capital%22"
+               f"&forms={form_param}"
+               f"&dateRange=custom&startdt={start}&enddt={end}&from=0&size=20")
+        data = fetch(url)
+        time.sleep(2)
+        if not data:
+            continue
+        hits = data.get("hits", {}).get("hits", [])
+        for h in hits:
+            name, ticker, cik, cik_raw, adsh, file_date, link = parse_efts_hit(h)
+            if file_date and not within_window(file_date, window):
+                continue
+            display_text = " ".join(h.get("_source", {}).get("display_names", [])).lower()
+            hit_kws = [kw for kw in activist_kws if kw in display_text]
+            results.append({
+                "source": f"edgar_{form_param.lower().replace('+','')}",
+                "company": name,
+                "cik": cik_raw,
+                "ticker": ticker,
+                "date": file_date,
+                "link": link,
+                "confidence": "HIGH" if hit_kws else "MEDIUM",
+                "signal_type": "leading_indicator",
+                "notes": (f"Activist filing ({form_label}). Keywords matched: {hit_kws}"
+                          if hit_kws else f"Activist filing ({form_label}) — monitor for capital return pressure"),
+            })
+    return results
+
+# ── Layer 3b: SEC EFTS Item 2.01 asset sale completions ─────────────────────
+def layer3_asset_sales(window=PROACTIVE_DAYS):
+    results = []
+    start = since(window)
+    end   = today()
+    queries = [
+        ("%22Item+2.01%22+%22disposition%22",   "asset disposition (Item 2.01)"),
+        ("%22completed+sale%22+%22proceeds%22",  "completed sale + proceeds"),
+    ]
+    seen = set()
+    for q_enc, label in queries:
+        url = (f"https://efts.sec.gov/LATEST/search-index?q={q_enc}"
+               f"&forms=8-K&dateRange=custom&startdt={start}&enddt={end}&from=0&size=20")
+        data = fetch(url)
+        time.sleep(2)
+        if not data:
+            continue
+        hits = data.get("hits", {}).get("hits", [])
+        for h in hits:
+            name, ticker, cik, cik_raw, adsh, file_date, link = parse_efts_hit(h)
+            if file_date and not within_window(file_date, window):
+                continue
+            key = adsh or (name + file_date)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({
+                "source": "edgar_asset_sale",
+                "company": name,
+                "cik": cik_raw,
+                "ticker": ticker,
+                "date": file_date,
+                "link": link,
+                "confidence": "HIGH",
+                "signal_type": "leading_indicator",
+                "notes": f"8-K Item 2.01 — asset sale completed ({label}). IRS requires REITs to distribute net proceeds.",
+            })
+    return results
+
+# ── Layer 3c: SEC XBRL BDC/REIT over-earned NII check ───────────────────────
+def layer3_xbrl_nii(watchlist=None):
+    """
+    Compare Net Investment Income vs. Distributions for BDC/REIT tickers.
+    Flags over-earned NII > stated distributions by >15% as spillover candidates.
+    """
+    if watchlist is None:
+        path = os.environ.get("DIVIDEND_INTEL_PORTFOLIO",
+                              os.path.expanduser("~/.wrenvps/dividend-intel/portfolio.json"))
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            holdings = data.get("holdings", {})
+            watchlist = [t for t, v in holdings.items()
+                         if v.get("div_type") in ("bdc", "reit")]
+        except Exception:
+            watchlist = []
+
+    results = []
+    for ticker in watchlist:
+        # Resolve CIK via SEC company tickers endpoint
+        url = f"https://efts.sec.gov/LATEST/search-index?q=%22{urllib.parse.quote(ticker)}%22&forms=10-K&from=0&size=1"
+        data = fetch(url)
+        time.sleep(1)
+        if not data:
+            continue
+        hits = data.get("hits", {}).get("hits", [])
+        if not hits:
+            continue
+        _, _, _, cik_raw, _, _, _ = parse_efts_hit(hits[0])
+        if not cik_raw:
+            continue
+        cik_padded = str(cik_raw).zfill(10)
+        facts_data = fetch(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik_padded}.json")
+        time.sleep(1)
+        if not facts_data:
+            continue
+        facts = facts_data.get("facts", {}).get("us-gaap", {})
+        nii_key  = next((k for k in ("NetInvestmentIncome", "InvestmentIncomeNet",
+                                     "InvestmentIncomeLoss") if k in facts), None)
+        dist_key = next((k for k in ("DistributionsPaid", "DividendsPaid",
+                                     "PaymentsOfDividends",
+                                     "DistributionMadeToLimitedPartnerCashDistributionsPaid")
+                         if k in facts), None)
+        if not nii_key or not dist_key:
+            continue
+
+        def latest_annual(concept_data):
+            units = concept_data.get("units", {})
+            for unit_vals in units.values():
+                annual = [v for v in unit_vals
+                          if v.get("form") in ("10-K", "10-K/A") and "frame" not in v]
+                if annual:
+                    annual.sort(key=lambda v: v.get("end", ""), reverse=True)
+                    return annual[0].get("val", 0)
+            return 0
+
+        nii  = latest_annual(facts[nii_key])
+        dist = abs(latest_annual(facts[dist_key]))
+        if dist > 0 and nii > dist * 1.15:
+            results.append({
+                "source": "xbrl_nii",
+                "company": ticker,
+                "cik": cik_raw,
+                "ticker": ticker,
+                "date": today(),
+                "link": f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik_padded}.json",
+                "confidence": "HIGH",
+                "signal_type": "leading_indicator",
+                "notes": (f"Over-earned NII: NII={nii:,.0f}, Distributions={dist:,.0f} "
+                          f"({(nii/dist - 1)*100:.0f}% excess). Spillover dividend likely."),
+            })
+    return results
+
+# ── Synthesize: deduplicate, resolve missing tickers, rank ───────────────────
+def synthesize(all_results):
+    seen = {}
+    for r in all_results:
+        key = (r.get("company", "").lower().strip()[:40], r.get("date", "")[:10])
+        if key not in seen:
+            seen[key] = r
+        else:
+            existing = seen[key]
+            priority = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+            if priority.get(r.get("confidence", "LOW"), 0) > priority.get(existing.get("confidence", "LOW"), 0):
+                r["sources"] = [existing.get("source", ""), r.get("source", "")]
+                seen[key] = r
+            else:
+                existing.setdefault("sources", [existing.get("source", "")]).append(r.get("source", ""))
+                if len(existing.get("sources", [])) > 1:
+                    existing["confidence"] = "HIGH"  # multi-source = promote confidence
+
+    deduped = list(seen.values())
+
+    # Resolve tickers for SEC results that still lack one
+    for r in deduped:
+        if not r.get("ticker") and r.get("cik"):
+            r["ticker"] = cik_to_ticker(r["cik"])
+            time.sleep(0.5)
+
+    order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    deduped.sort(key=lambda r: (order.get(r.get("confidence", "LOW"), 2),
+                                 r.get("date", "") or ""))
+    deduped.reverse()
+    return deduped
+
+# ── Run all layers ────────────────────────────────────────────────────────────
+import sys
+print("Running special dividend scanner...", flush=True)
+
+all_results = []
+layers = [
+    ("Layer 1a: SEC EDGAR Atom feed",        layer1_edgar_atom),
+    ("Layer 1b: SEC EFTS (bug workaround)",  layer1_edgar_efts),
+    ("Layer 2:  SEC EFTS broad (press rel)", layer2_efts_broad),
+    ("Layer 3a: Activist 13D/13G",           layer3_activist_13d),
+    ("Layer 3b: Asset sale completions",     layer3_asset_sales),
+    ("Layer 3c: XBRL BDC/REIT NII",         layer3_xbrl_nii),
+]
+
+for label, fn in layers:
+    try:
+        hits = fn()
+        all_results.extend(hits)
+        status = f"{len(hits)} hits"
+    except Exception as e:
+        status = f"ERROR: {e}"
+    print(f"  {label}: {status}", flush=True)
+
+final = synthesize(all_results)
+print(json.dumps(final, indent=2))
+SCANNER_EOF
 ```
 
-Parse the JSON response: `hits.hits[]._source` contains `entity_name`, `file_date`, `accession_no`, `entity_id`.
+Output: JSON array. Each item has:
 
-### Proactive layer — asset sale completions (Item 2.01)
+| Field | Description |
+|---|---|
+| `ticker` | Resolved ticker symbol (empty if unresolvable) |
+| `company` | Company name |
+| `cik` | SEC CIK (if from SEC source) |
+| `date` | Filing or publication date |
+| `source` | `edgar_rss`, `edgar_efts`, `stockanalysis`, `benzinga`, `globenewswire`, `edgar_sc13d`, `edgar_asset_sale`, `xbrl_nii` |
+| `confidence` | `HIGH` / `MEDIUM` / `LOW` |
+| `signal_type` | `announced` / `press_release` / `leading_indicator` |
+| `link` | SEC filing URL or press release URL |
+| `notes` | Human-readable context |
 
-Companies completing major asset dispositions often follow with special dividends.
+**Confidence rules:**
+- `HIGH` — Formal 8-K with dividend keywords, REIT Item 2.01 (IRS-mandated), BDC over-earned NII, or multi-source corroboration
+- `MEDIUM` — Press release before 8-K filing, or 13D/13G without explicit dividend keywords
+- `LOW` — Management commentary 8-K (Item 8.01/9.01) only
 
-```bash
-SINCE=$(python3 -c "from datetime import datetime,timedelta; print((datetime.now()-timedelta(days=14)).strftime('%Y-%m-%d'))")
-curl -s -H "User-Agent: dividend-intel/1.0 (nanobot@local)" \
-  "https://efts.sec.gov/LATEST/search-index?q=%22Item+2.01%22+%22disposition%22&dateRange=custom&startdt=${SINCE}&forms=8-K"
-```
-
-Flag these as `signal: asset-sale-completed — monitor for special dividend`.
+**EFTS bug note:** Both `startdt` and `enddt` are always passed to EFTS. Results are additionally post-filtered by `file_date` in Python to guard against the confirmed server-side date filter bug.
 
 ---
 
