@@ -52,6 +52,7 @@ All holdings, strategy rules, and market state live in a **single JSON file**.
 | dividend_calendar | Sorted upcoming ex-div / pay date calendar |
 | yield_screener | Find new positions matching yield/growth/safety criteria |
 | account_optimizer | Recommend tax-efficient account placement |
+| newsletter_ingest | Poll IMAP inbox for dividend newsletters and extract actionable signals |
 
 ---
 
@@ -726,6 +727,53 @@ for label, fn in layers:
         status = f"ERROR: {e}"
     print(f"  {label}: {status}", flush=True)
 
+# ── Layer 4: Newsletter signals from IMAP ingest ──────────────────────────────
+# Reads ~/.wrenvps/dividend-intel/newsletter_signals.json if present and merges
+# special_dividend and dividend_hike signals into the scanner output.
+# Run newsletter-ingest.sh before this scanner to populate fresh signals.
+def layer4_newsletter_signals():
+    results = []
+    signals_path = os.path.expanduser("~/.wrenvps/dividend-intel/newsletter_signals.json")
+    try:
+        with open(signals_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return results  # no newsletter signals yet — skip silently
+    except Exception as e:
+        print(f"  WARNING: could not read newsletter_signals.json: {e}", flush=True)
+        return results
+
+    target_types = {"special_dividend", "dividend_hike"}
+    for sig in data.get("signals", []):
+        if sig.get("signalType") not in target_types:
+            continue
+        conf_map = {"high": "HIGH", "medium": "MEDIUM", "low": "LOW"}
+        confidence = conf_map.get(sig.get("confidence", "low"), "LOW")
+        tickers = sig.get("tickers", [])
+        results.append({
+            "source": "newsletter",
+            "company": tickers[0] if tickers else sig.get("source", "newsletter"),
+            "cik": "",
+            "ticker": tickers[0] if tickers else "",
+            "date": sig.get("date", ""),
+            "link": "",
+            "confidence": confidence,
+            "signal_type": "newsletter_" + sig.get("signalType", ""),
+            "notes": (
+                f"Newsletter signal from {sig.get('source', 'unknown')} — "
+                f"{sig.get('summary', '')} | Subject: {sig.get('subject', '')[:80]} | "
+                f"Excerpt: {sig.get('rawExcerpt', '')[:200]}"
+            ),
+        })
+    return results
+
+try:
+    nl_hits = layer4_newsletter_signals()
+    all_results.extend(nl_hits)
+    print(f"  Layer 4:  Newsletter signals:           {len(nl_hits)} hits", flush=True)
+except Exception as e:
+    print(f"  Layer 4:  Newsletter signals:           ERROR: {e}", flush=True)
+
 final = synthesize(all_results)
 print(json.dumps(final, indent=2))
 SCANNER_EOF
@@ -971,6 +1019,97 @@ shell_exec: true
 Or via the agent (tell the agent):
 
 > "Add a cron job named dividend_state_refresh to run `bash ~/.wrenvps/scripts/dividend-state-refresh.sh` on schedule `0 3 * * 1` in timezone `America/New_York`, silent, no delivery."
+
+---
+
+## 6. newsletter_ingest
+
+Poll a Hostinger IMAP inbox for dividend/investing newsletters. Extracts actionable signals and writes them to `~/.wrenvps/dividend-intel/newsletter_signals.json` for consumption by `special_dividend_scanner` and manual review.
+
+```bash
+bash ~/.wrenvps/scripts/newsletter-ingest.sh
+```
+
+**Signal types:**
+
+| `signalType` | Triggered by |
+|---|---|
+| `special_dividend` | "special dividend", "extra dividend", "one-time dividend", "extraordinary dividend" |
+| `dividend_hike` | "dividend increase", "dividend hike", "raises its dividend", "increases its dividend" |
+| `dividend_cut` | "dividend cut", "dividend suspended", "dividend eliminated", "dividend reduced" |
+| `sector_commentary` | General: "dividend stock", "income investor", "ex-dividend date", "dividend yield" |
+
+**Confidence rules:**
+
+| Level | Conditions |
+|---|---|
+| `high` | ticker + dollar amount + date all found in excerpt |
+| `medium` | ticker + keyword (amount or date present) |
+| `low` | keyword only, or sector commentary |
+
+**Output schema** (`newsletter_signals.json`):
+
+```json
+{
+  "lastChecked": "2026-04-07T11:45:00Z",
+  "signals": [
+    {
+      "source": "informedcrew.com",
+      "sourceType": "newsletter",
+      "date": "2026-04-07",
+      "subject": "OpenAI wants you richer",
+      "signalType": "special_dividend|dividend_hike|dividend_cut|sector_commentary",
+      "tickers": ["AAPL", "MSFT"],
+      "summary": "Brief extracted summary of the relevant content",
+      "confidence": "high|medium|low",
+      "rawExcerpt": "Direct quote from the email body"
+    }
+  ]
+}
+```
+
+**Integration:** Signals from this file are merged into `special_dividend_scanner` output. Run `newsletter_ingest` before the scanner to ensure fresh signals appear alongside SEC 8-K data.
+
+**Idempotency:** Processed message IDs are tracked in `~/.wrenvps/dividend-intel/newsletter_processed_ids.json`. Re-running is safe — already-processed messages are skipped.
+
+### Setup
+
+1. Ensure IMAP credentials exist at `~/.wrenvps/dividend-intel/email_creds.json`:
+
+```json
+{
+  "host": "imap.hostinger.com",
+  "port": 993,
+  "username": "user@example.com",
+  "password": "yourpassword",
+  "ssl": true
+}
+```
+
+2. Install the script:
+
+```bash
+mkdir -p ~/.wrenvps/scripts
+cp /path/to/skill/scripts/newsletter-ingest.sh ~/.wrenvps/scripts/
+chmod +x ~/.wrenvps/scripts/newsletter-ingest.sh
+```
+
+3. Register the cron job via the nanobot cron tool:
+
+```
+Name: newsletter_ingest
+cron_expr: 45 6 * * 1-5
+tz: America/New_York
+message: bash ~/.wrenvps/scripts/newsletter-ingest.sh
+deliver: false
+shell_exec: true
+```
+
+Or tell the agent:
+
+> "Add a cron job named newsletter_ingest to run `bash ~/.wrenvps/scripts/newsletter-ingest.sh` on schedule `45 6 * * 1-5` in timezone `America/New_York`, silent, no delivery."
+
+**Cron timing:** Runs at 6:45 AM ET on weekdays — 10 minutes before `special_dividend_scanner` at 6:55 AM ET, so newsletter signals are fresh when the scanner runs.
 
 ---
 
