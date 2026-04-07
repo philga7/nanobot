@@ -19,10 +19,8 @@ clone_or_update() {
   fi
 }
 
-clone_or_update "https://github.com/calesthio/Crucix.git" "crucix" "master"
 clone_or_update "https://github.com/wangziqi06/724-office.git" "724-office" "master"
 
 echo "Vendored repos under ${VENDOR}. Next:"
-echo "  cp vendor/crucix/.env.example vendor/crucix/.env   # Crucix: edit keys"
 echo "  cp vendor/724-office/config.example.json vendor/724-office/config.json"
 echo "  docker compose --profile full up -d --build"

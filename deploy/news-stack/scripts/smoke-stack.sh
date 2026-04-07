@@ -12,7 +12,6 @@ if [[ -f .env ]]; then
 fi
 
 QH="${QDRANT_HTTP_PORT:-6333}"
-CR="${CRUCIX_PORT:-3117}"
 OF="${OFFICE_PORT:-8082}"
 
 pass=0
@@ -31,7 +30,6 @@ probe() {
 
 echo "News stack smoke (host ports from .env or defaults)"
 probe "qdrant" "http://127.0.0.1:${QH}/"
-probe "crucix" "http://127.0.0.1:${CR}/api/health"
 probe "office" "http://127.0.0.1:${OF}/health"
 echo "Summary: ${pass} reachable, ${fail} skipped/failed"
 exit 0

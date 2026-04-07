@@ -156,7 +156,6 @@ class NewsStackIntegrationConfig(Base):
     Populate as you bring up each service; HTTP client wiring can read these when implemented.
     """
 
-    crucix_base_url: str = ""
     office_base_url: str = ""
     qdrant_url: str = ""
     qdrant_api_key: str = ""
@@ -233,7 +232,7 @@ class Config(BaseSettings):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     news_stack: NewsStackIntegrationConfig = Field(
         default_factory=NewsStackIntegrationConfig,
-        description="External Crucix / 7-24 Office / Qdrant endpoints",
+        description="External 7-24 Office / Qdrant endpoints",
     )
 
     @property
