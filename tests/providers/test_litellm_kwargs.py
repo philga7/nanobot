@@ -284,6 +284,40 @@ def test_openai_compat_preserves_message_level_reasoning_fields() -> None:
     assert sanitized[0]["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "sig"}}
 
 
+def test_openai_compat_sanitizes_tool_call_arguments_for_strict_providers() -> None:
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+        provider = OpenAICompatProvider()
+
+    sanitized = provider._sanitize_messages([
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "dict_args", "arguments": {"path": "a.txt"}},
+                },
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "list_args", "arguments": ["a.txt"]},
+                },
+                {
+                    "id": "call_3",
+                    "type": "function",
+                    "function": {"name": "bad_json", "arguments": "{oops"},
+                },
+            ],
+        }
+    ])
+
+    tcs = sanitized[0]["tool_calls"]
+    assert tcs[0]["function"]["arguments"] == '{"path": "a.txt"}'
+    assert tcs[1]["function"]["arguments"] == "{}"
+    assert tcs[2]["function"]["arguments"] == "{}"
+
+
 @pytest.mark.asyncio
 async def test_openai_compat_stream_watchdog_returns_error_on_stall(monkeypatch) -> None:
     monkeypatch.setenv("NANOBOT_STREAM_IDLE_TIMEOUT_S", "0")
