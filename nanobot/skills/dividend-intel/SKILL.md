@@ -404,91 +404,90 @@ def layer2_efts_broad(window=WINDOW_DAYS):
     return results
 
 # ── Layer 3a: SEC 13D/13G activist filings ───────────────────────────────────
-# Primary: EFTS full-text search (indexed, but SC 13D/13G volume is low — expect
-# 0 hits in quiet periods, which is correct, not a bug).
-# Fallback: SEC EDGAR Atom feed for recent filings when EFTS returns nothing.
+# Primary: EDGAR Atom feed for SC 13D/13G — covers all form types uniformly.
+# EFTS SC 13D/13G indexing is unreliable (consistently returns 0); Atom feed
+# is the authoritative source for recent filings.
+# Filter: keyword-match title+summary for capital return language → HIGH.
+#         No keyword match → included as MEDIUM for manual review.
 def layer3_activist_13d(window=PROACTIVE_DAYS):
     results = []
-    start = since(window)
-    end   = today()
     activist_kws = ["special dividend", "return of capital", "net cash", "liquidation",
                     "asset sale proceeds", "distribution to shareholders"]
 
-    # Primary: EFTS keyword search across SC 13D / SC 13G
-    for form_param, form_label in (("SC+13D", "SC 13D"), ("SC+13G", "SC 13G")):
-        for q_enc, q_label in (
-            ("%22return+of+capital%22", "return of capital"),
-            ("%22special+dividend%22",  "special dividend"),
-        ):
-            url = (f"https://efts.sec.gov/LATEST/search-index?q={q_enc}"
-                   f"&forms={form_param}"
-                   f"&dateRange=custom&startdt={start}&enddt={end}&from=0&size=20")
-            data = fetch(url)
-            time.sleep(2)
-            if not data:
+    for form_type, form_label in (("SC+13D", "SC 13D"), ("SC+13G", "SC 13G")):
+        atom_url = (f"https://www.sec.gov/cgi-bin/browse-edgar"
+                    f"?action=getcurrent&type={form_type}&dateb=&owner=include&count=80&output=atom")
+        xml = fetch_xml(atom_url)
+        if not xml:
+            continue
+        entries = re.findall(r"<entry>(.*?)</entry>", xml, re.DOTALL)
+        for entry in entries:
+            title   = re.search(r"<title>(.*?)</title>", entry, re.DOTALL)
+            link    = re.search(r'<link[^>]+href="([^"]+)"', entry, re.DOTALL)
+            updated = re.search(r"<updated>(.*?)</updated>", entry, re.DOTALL)
+            summary = re.search(r"<summary[^>]*>(.*?)</summary>", entry, re.DOTALL)
+            title_s   = (title.group(1)   if title   else "").strip()
+            link_s    = (link.group(1)    if link    else "").strip()
+            upd_s     = (updated.group(1) if updated else "").strip()
+            summary_s = (summary.group(1) if summary else "").strip()
+            summary_s = re.sub(r"&lt;.*?&gt;", " ", summary_s)
+            if upd_s and not within_window(upd_s, window):
                 continue
-            hits = data.get("hits", {}).get("hits", [])
-            for h in hits:
-                name, ticker, cik, cik_raw, adsh, file_date, link = parse_efts_hit(h)
-                if file_date and not within_window(file_date, window):
-                    continue
-                display_text = " ".join(h.get("_source", {}).get("display_names", [])).lower()
-                hit_kws = [kw for kw in activist_kws if kw in display_text]
-                results.append({
-                    "source": f"edgar_{form_param.lower().replace('+','')}",
-                    "company": name,
-                    "cik": cik_raw,
-                    "ticker": ticker,
-                    "date": file_date,
-                    "link": link,
-                    "confidence": "HIGH" if hit_kws else "MEDIUM",
-                    "signal_type": "leading_indicator",
-                    "notes": (f"Activist filing ({form_label}, {q_label}). Keywords: {hit_kws}"
-                              if hit_kws else f"Activist filing ({form_label}) — monitor for capital return pressure"),
-                })
-
-    # Fallback: Atom feed (returns most recent SC 13D/13G regardless of keywords)
-    # Use when EFTS returns 0 — surfaces new activist positions for manual review.
-    if not results:
-        for form_type, form_label in (("SC+13D", "SC 13D"), ("SC+13G", "SC 13G")):
-            atom_url = (f"https://www.sec.gov/cgi-bin/browse-edgar"
-                        f"?action=getcurrent&type={form_type}&dateb=&owner=include&count=20&output=atom")
-            xml = fetch_xml(atom_url)
-            if not xml:
-                continue
-            entries = re.findall(r"<entry>(.*?)</entry>", xml, re.DOTALL)
-            for entry in entries:
-                title   = re.search(r"<title>(.*?)</title>", entry, re.DOTALL)
-                link    = re.search(r'<link[^>]+href="([^"]+)"', entry, re.DOTALL)
-                updated = re.search(r"<updated>(.*?)</updated>", entry, re.DOTALL)
-                title_s = (title.group(1)   if title   else "").strip()
-                link_s  = (link.group(1)    if link    else "").strip()
-                upd_s   = (updated.group(1) if updated else "").strip()
-                if upd_s and not within_window(upd_s, window):
-                    continue
-                cik_m  = re.search(r"/data/(\d+)/", link_s)
-                cik    = cik_m.group(1) if cik_m else ""
-                name_m = re.search(r"^SC 13[DG][/A]* - (.+?) \(", title_s)
-                name   = name_m.group(1).strip() if name_m else title_s
-                results.append({
-                    "source": f"edgar_{form_label.lower().replace(' ','')}",
-                    "company": name,
-                    "cik": cik,
-                    "ticker": "",
-                    "date": upd_s[:10],
-                    "link": link_s,
-                    "confidence": "MEDIUM",
-                    "signal_type": "leading_indicator",
-                    "notes": f"Activist filing ({form_label}) via Atom feed — review for capital return thesis",
-                })
-            time.sleep(1)
+            combined = (title_s + " " + summary_s).lower()
+            hit_kws  = [kw for kw in activist_kws if kw in combined]
+            cik_m  = re.search(r"/data/(\d+)/", link_s)
+            cik    = cik_m.group(1) if cik_m else ""
+            name_m = re.search(r"^SC 13[DG][/A]* - (.+?) \(", title_s)
+            name   = name_m.group(1).strip() if name_m else title_s
+            results.append({
+                "source": f"edgar_{form_label.lower().replace(' ', '')}",
+                "company": name,
+                "cik": cik,
+                "ticker": "",
+                "date": upd_s[:10],
+                "link": link_s,
+                "confidence": "HIGH" if hit_kws else "MEDIUM",
+                "signal_type": "leading_indicator",
+                "notes": (f"Schedule {form_label} activist filing. Keywords: {hit_kws}"
+                          if hit_kws else f"Activist filing ({form_label}) via Atom — review for capital return thesis"),
+            })
+        time.sleep(1)
     return results
 
 # ── Layer 3b: SEC EFTS Item 2.01 asset sale completions ─────────────────────
+# Item 2.01 is filed by ALL companies doing M&A, not just REITs.
+# Filter: only flag hits where the filer is a REIT (SIC 6798), is in the
+# portfolio as div_type="reit", or has "REIT"/"Real Estate Investment" in name.
+# This trims ~101 broad hits down to the relevant REIT-mandated distributions.
+REIT_SIC_CODES = {"6798"}
+REIT_NAME_PATTERNS = re.compile(r"\breit\b|real estate investment trust", re.IGNORECASE)
+
+def _load_reit_ciks():
+    """Return a set of zero-padded CIK strings for portfolio REITs."""
+    reit_ciks = set()
+    path = os.environ.get("DIVIDEND_INTEL_PORTFOLIO",
+                          os.path.expanduser("~/.wrenvps/dividend-intel/portfolio.json"))
+    try:
+        with open(path, encoding="utf-8") as f:
+            port = json.load(f)
+        reit_tickers = {t.upper() for t, v in port.get("holdings", {}).items()
+                        if v.get("div_type") == "reit"}
+        if not reit_tickers:
+            return reit_ciks
+        tk_json = fetch("https://www.sec.gov/files/company_tickers.json")
+        if tk_json:
+            for entry in tk_json.values():
+                if entry.get("ticker", "").upper() in reit_tickers:
+                    reit_ciks.add(str(entry.get("cik_str", "")).zfill(10))
+    except Exception:
+        pass
+    return reit_ciks
+
 def layer3_asset_sales(window=PROACTIVE_DAYS):
     results = []
     start = since(window)
     end   = today()
+    reit_ciks = _load_reit_ciks()
     queries = [
         ("%22Item+2.01%22+%22disposition%22",   "asset disposition (Item 2.01)"),
         ("%22completed+sale%22+%22proceeds%22",  "completed sale + proceeds"),
@@ -510,6 +509,15 @@ def layer3_asset_sales(window=PROACTIVE_DAYS):
             if key in seen:
                 continue
             seen.add(key)
+            # REIT filter: SIC 6798, portfolio REIT, or REIT in company name
+            sic_list = h.get("_source", {}).get("sics", [])
+            is_reit = (
+                any(s in REIT_SIC_CODES for s in sic_list)
+                or cik_raw in reit_ciks
+                or bool(REIT_NAME_PATTERNS.search(name))
+            )
+            if not is_reit:
+                continue
             results.append({
                 "source": "edgar_asset_sale",
                 "company": name,
@@ -519,7 +527,7 @@ def layer3_asset_sales(window=PROACTIVE_DAYS):
                 "link": link,
                 "confidence": "HIGH",
                 "signal_type": "leading_indicator",
-                "notes": f"8-K Item 2.01 — asset sale completed ({label}). IRS requires REITs to distribute net proceeds.",
+                "notes": f"8-K Item 2.01 — asset sale completed ({label}). REIT — IRS requires distribution of net proceeds.",
             })
     return results
 
@@ -657,6 +665,31 @@ def synthesize(all_results):
             r["notes"] = r.get("notes", "") + " [upgraded: 2 sources]"
         if r.get("source") == "edgar_asset_sale":
             r["confidence"] = "HIGH"  # REIT Item 2.01 is always HIGH
+
+    # Layer 2 REIT/BDC watch flag: MEDIUM hits from broad EFTS scan that match
+    # known REIT/BDC sectors get a "Watch" note so analysts can prioritise them.
+    reit_bdc_pattern = re.compile(
+        r"\breit\b|real estate investment trust|realty|properties|"
+        r"mortgage trust|\bbdc\b|business development|development capital",
+        re.IGNORECASE,
+    )
+    # Load portfolio REIT/BDC tickers for name-based cross-reference
+    _port_reit_bdc: set[str] = set()
+    try:
+        _port_path = os.environ.get("DIVIDEND_INTEL_PORTFOLIO",
+                                     os.path.expanduser("~/.wrenvps/dividend-intel/portfolio.json"))
+        with open(_port_path, encoding="utf-8") as _f:
+            _port = json.load(_f)
+        _port_reit_bdc = {t.upper() for t, v in _port.get("holdings", {}).items()
+                          if v.get("div_type") in ("reit", "bdc")}
+    except Exception:
+        pass
+    for r in deduped:
+        if r.get("confidence") == "MEDIUM" and r.get("source") == "edgar_efts_broad":
+            tk = r.get("ticker", "").upper()
+            nm = r.get("company", "")
+            if tk in _port_reit_bdc or bool(reit_bdc_pattern.search(nm)):
+                r["notes"] = r.get("notes", "") + " | Watch: REIT/BDC sector — special dividend IRS-mandated if asset sale."
 
     # Resolve tickers for SEC results that still lack one
     for r in deduped:
