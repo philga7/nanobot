@@ -19,8 +19,8 @@ def build_api_path_process_direct_metadata(
 ) -> dict[str, Any]:
     """Metadata for AgentLoop.process_direct from the HTTP API transport.
 
-    Mirrors gateway semantics: same DecideAndActContext shape so 7/24 Office and
-    Crucix bridges can treat ``channel=\"api\"`` as a first-class entrypoint.
+    Mirrors gateway semantics: same DecideAndActContext shape so 7/24 Office
+    bridges can treat ``channel=\"api\"`` as a first-class entrypoint.
     """
     meta: dict[str, Any] = {
         "session_key": session_key,

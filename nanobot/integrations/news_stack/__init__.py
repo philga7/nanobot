@@ -16,11 +16,13 @@ from nanobot.integrations.news_stack.contracts import (
     MemorySearchResponse,
     MemoryUpsertRequest,
     PlannedAction,
+    Signal,
 )
 
 __all__ = [
     "NEWS_STACK_DECIDE_CONTEXT_KEY",
     "build_api_path_process_direct_metadata",
+    "Signal",
     "CrucixSignal",
     "IngestSignalRequest",
     "DecideAndActContext",

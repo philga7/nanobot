@@ -157,7 +157,6 @@ def test_load_config_news_stack_camel_case(tmp_path) -> None:
             {
                 "news_stack": {
                     "qdrantUrl": "http://127.0.0.1:6333",
-                    "crucixBaseUrl": "http://127.0.0.1:3117",
                 }
             }
         ),
@@ -165,7 +164,6 @@ def test_load_config_news_stack_camel_case(tmp_path) -> None:
     )
     config = load_config(config_path)
     assert config.news_stack.qdrant_url == "http://127.0.0.1:6333"
-    assert config.news_stack.crucix_base_url == "http://127.0.0.1:3117"
     assert config.news_stack.office_base_url == ""
 
 

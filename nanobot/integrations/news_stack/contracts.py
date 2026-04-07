@@ -1,7 +1,6 @@
 """Contracts for the externalized news stack integration.
 
 These models define the payload boundary between nanobot and:
-- Crucix (signal ingestion)
 - 7/24 Office (reasoning + tool orchestration)
 - Qdrant-backed memory services
 """
@@ -12,12 +11,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 SignalTier = Literal["FLASH", "PRIORITY", "ROUTINE"]
-SignalSource = Literal["crucix", "manual", "other"]
+SignalSource = Literal["osint", "manual", "other"]
 ActionType = Literal["notify_user", "store_memory", "run_tool", "create_tool", "noop"]
 
 
-class CrucixSignal(BaseModel):
-    """Normalized signal payload emitted by Crucix."""
+class Signal(BaseModel):
+    """Normalized signal payload for OSINT intelligence."""
 
     signal_id: str
     title: str
@@ -25,15 +24,19 @@ class CrucixSignal(BaseModel):
     url: str | None = None
     tier: SignalTier
     published_at: datetime | None = None
-    source: SignalSource = "crucix"
+    source: SignalSource = "osint"
     tags: list[str] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
+
+
+# Backwards-compatible alias
+CrucixSignal = Signal
 
 
 class IngestSignalRequest(BaseModel):
     """Input contract for ingesting a signal into nanobot."""
 
-    signal: CrucixSignal
+    signal: Signal
     received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     dry_run: bool = False
 
@@ -41,7 +44,7 @@ class IngestSignalRequest(BaseModel):
 class DecideAndActContext(BaseModel):
     """Context passed from nanobot gateway to the execution layer."""
 
-    signal: CrucixSignal | None = None
+    signal: Signal | None = None
     channel: str | None = None
     chat_id: str | None = None
     recent_messages: list[str] = Field(default_factory=list)
