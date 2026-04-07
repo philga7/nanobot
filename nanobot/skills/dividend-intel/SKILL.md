@@ -354,6 +354,12 @@ def layer1_edgar_efts(window=WINDOW_DAYS):
 # Replaces third-party RSS feeds (Benzinga/GlobeNewswire/StockAnalysis are
 # unreliable as public RSS endpoints). EFTS full-text covers 8-K press
 # releases (Item 7.01/8.01) which precede or accompany formal declarations.
+#
+# Noise filter: items list must contain at least one substantive item code.
+# Pure 8.01/9.01-only filings (management commentary, earnings call quotes)
+# are dropped entirely — they flood with ~100 hits and rarely formalize.
+SUBSTANTIVE_ITEMS = {"1.01", "2.01", "2.02", "2.03", "5.02", "7.01"}
+
 def layer2_efts_broad(window=WINDOW_DAYS):
     results = []
     start = since(window)
@@ -379,10 +385,11 @@ def layer2_efts_broad(window=WINDOW_DAYS):
             key = adsh or (name + file_date)
             if key in seen:
                 continue
-            seen.add(key)
-            # Item 8.01/9.01 = management commentary (lower confidence)
             items_list = h.get("_source", {}).get("items", [])
-            is_commentary = any(i in ("8.01", "9.01") for i in items_list)
+            # Drop pure commentary filings (8.01/9.01 only) — too noisy
+            if items_list and not any(i in SUBSTANTIVE_ITEMS for i in items_list):
+                continue
+            seen.add(key)
             results.append({
                 "source": "edgar_efts_broad",
                 "company": name,
@@ -390,47 +397,91 @@ def layer2_efts_broad(window=WINDOW_DAYS):
                 "ticker": ticker,
                 "date": file_date,
                 "link": link,
-                "confidence": "LOW" if is_commentary else "MEDIUM",
+                "confidence": "MEDIUM",
                 "signal_type": "press_release",
-                "notes": (f"8-K Items {items_list} — EFTS broad query: {label}."
-                          + (" Item 8.01/9.01 = commentary only, may not formalize." if is_commentary else "")),
+                "notes": f"8-K Items {items_list} — EFTS broad query: {label}.",
             })
     return results
 
 # ── Layer 3a: SEC 13D/13G activist filings ───────────────────────────────────
+# Primary: EFTS full-text search (indexed, but SC 13D/13G volume is low — expect
+# 0 hits in quiet periods, which is correct, not a bug).
+# Fallback: SEC EDGAR Atom feed for recent filings when EFTS returns nothing.
 def layer3_activist_13d(window=PROACTIVE_DAYS):
     results = []
     start = since(window)
     end   = today()
     activist_kws = ["special dividend", "return of capital", "net cash", "liquidation",
                     "asset sale proceeds", "distribution to shareholders"]
+
+    # Primary: EFTS keyword search across SC 13D / SC 13G
     for form_param, form_label in (("SC+13D", "SC 13D"), ("SC+13G", "SC 13G")):
-        url = (f"https://efts.sec.gov/LATEST/search-index?q=%22return+of+capital%22"
-               f"&forms={form_param}"
-               f"&dateRange=custom&startdt={start}&enddt={end}&from=0&size=20")
-        data = fetch(url)
-        time.sleep(2)
-        if not data:
-            continue
-        hits = data.get("hits", {}).get("hits", [])
-        for h in hits:
-            name, ticker, cik, cik_raw, adsh, file_date, link = parse_efts_hit(h)
-            if file_date and not within_window(file_date, window):
+        for q_enc, q_label in (
+            ("%22return+of+capital%22", "return of capital"),
+            ("%22special+dividend%22",  "special dividend"),
+        ):
+            url = (f"https://efts.sec.gov/LATEST/search-index?q={q_enc}"
+                   f"&forms={form_param}"
+                   f"&dateRange=custom&startdt={start}&enddt={end}&from=0&size=20")
+            data = fetch(url)
+            time.sleep(2)
+            if not data:
                 continue
-            display_text = " ".join(h.get("_source", {}).get("display_names", [])).lower()
-            hit_kws = [kw for kw in activist_kws if kw in display_text]
-            results.append({
-                "source": f"edgar_{form_param.lower().replace('+','')}",
-                "company": name,
-                "cik": cik_raw,
-                "ticker": ticker,
-                "date": file_date,
-                "link": link,
-                "confidence": "HIGH" if hit_kws else "MEDIUM",
-                "signal_type": "leading_indicator",
-                "notes": (f"Activist filing ({form_label}). Keywords matched: {hit_kws}"
-                          if hit_kws else f"Activist filing ({form_label}) — monitor for capital return pressure"),
-            })
+            hits = data.get("hits", {}).get("hits", [])
+            for h in hits:
+                name, ticker, cik, cik_raw, adsh, file_date, link = parse_efts_hit(h)
+                if file_date and not within_window(file_date, window):
+                    continue
+                display_text = " ".join(h.get("_source", {}).get("display_names", [])).lower()
+                hit_kws = [kw for kw in activist_kws if kw in display_text]
+                results.append({
+                    "source": f"edgar_{form_param.lower().replace('+','')}",
+                    "company": name,
+                    "cik": cik_raw,
+                    "ticker": ticker,
+                    "date": file_date,
+                    "link": link,
+                    "confidence": "HIGH" if hit_kws else "MEDIUM",
+                    "signal_type": "leading_indicator",
+                    "notes": (f"Activist filing ({form_label}, {q_label}). Keywords: {hit_kws}"
+                              if hit_kws else f"Activist filing ({form_label}) — monitor for capital return pressure"),
+                })
+
+    # Fallback: Atom feed (returns most recent SC 13D/13G regardless of keywords)
+    # Use when EFTS returns 0 — surfaces new activist positions for manual review.
+    if not results:
+        for form_type, form_label in (("SC+13D", "SC 13D"), ("SC+13G", "SC 13G")):
+            atom_url = (f"https://www.sec.gov/cgi-bin/browse-edgar"
+                        f"?action=getcurrent&type={form_type}&dateb=&owner=include&count=20&output=atom")
+            xml = fetch_xml(atom_url)
+            if not xml:
+                continue
+            entries = re.findall(r"<entry>(.*?)</entry>", xml, re.DOTALL)
+            for entry in entries:
+                title   = re.search(r"<title>(.*?)</title>", entry, re.DOTALL)
+                link    = re.search(r'<link[^>]+href="([^"]+)"', entry, re.DOTALL)
+                updated = re.search(r"<updated>(.*?)</updated>", entry, re.DOTALL)
+                title_s = (title.group(1)   if title   else "").strip()
+                link_s  = (link.group(1)    if link    else "").strip()
+                upd_s   = (updated.group(1) if updated else "").strip()
+                if upd_s and not within_window(upd_s, window):
+                    continue
+                cik_m  = re.search(r"/data/(\d+)/", link_s)
+                cik    = cik_m.group(1) if cik_m else ""
+                name_m = re.search(r"^SC 13[DG][/A]* - (.+?) \(", title_s)
+                name   = name_m.group(1).strip() if name_m else title_s
+                results.append({
+                    "source": f"edgar_{form_label.lower().replace(' ','')}",
+                    "company": name,
+                    "cik": cik,
+                    "ticker": "",
+                    "date": upd_s[:10],
+                    "link": link_s,
+                    "confidence": "MEDIUM",
+                    "signal_type": "leading_indicator",
+                    "notes": f"Activist filing ({form_label}) via Atom feed — review for capital return thesis",
+                })
+            time.sleep(1)
     return results
 
 # ── Layer 3b: SEC EFTS Item 2.01 asset sale completions ─────────────────────
@@ -473,98 +524,139 @@ def layer3_asset_sales(window=PROACTIVE_DAYS):
     return results
 
 # ── Layer 3c: SEC XBRL BDC/REIT over-earned NII check ───────────────────────
+# Tag mappings confirmed via live XBRL data for ARCC (BDC) and Realty Income (REIT):
+#
+# BDC spillover signal:
+#   NetInvestmentIncome > PaymentsOfDividends by >15%  →  undistributed income must be paid out
+#   InvestmentCompanyDistributableEarningsLossAccumulatedOrdinaryIncomeLoss > 0  →  spillover banked
+#
+# REIT over-distribution:
+#   PaymentsOfDividends vs UndistributedEarnings — negative undistributed = over-earned
+#
+# These are the actual tags present in SEC XBRL filings (no "Invest" namespace needed).
 def layer3_xbrl_nii(watchlist=None):
-    """
-    Compare Net Investment Income vs. Distributions for BDC/REIT tickers.
-    Flags over-earned NII > stated distributions by >15% as spillover candidates.
-    """
     if watchlist is None:
         path = os.environ.get("DIVIDEND_INTEL_PORTFOLIO",
                               os.path.expanduser("~/.wrenvps/dividend-intel/portfolio.json"))
         try:
             with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-            holdings = data.get("holdings", {})
-            watchlist = [t for t, v in holdings.items()
+                port = json.load(f)
+            holdings = port.get("holdings", {})
+            watchlist = [(t, v.get("div_type", "")) for t, v in holdings.items()
                          if v.get("div_type") in ("bdc", "reit")]
         except Exception:
             watchlist = []
+    else:
+        watchlist = [(t, "") for t in watchlist]
+
+    def latest_annual(facts, tag):
+        concept = facts.get(tag)
+        if not concept:
+            return 0
+        units = concept.get("units", {})
+        for unit_vals in units.values():
+            annual = [v for v in unit_vals
+                      if v.get("form") in ("10-K", "10-K/A") and "frame" not in v]
+            if annual:
+                annual.sort(key=lambda v: v.get("end", ""), reverse=True)
+                return annual[0].get("val", 0)
+        return 0
 
     results = []
-    for ticker in watchlist:
-        # Resolve CIK via SEC company tickers endpoint
-        url = f"https://efts.sec.gov/LATEST/search-index?q=%22{urllib.parse.quote(ticker)}%22&forms=10-K&from=0&size=1"
-        data = fetch(url)
-        time.sleep(1)
-        if not data:
-            continue
-        hits = data.get("hits", {}).get("hits", [])
-        if not hits:
-            continue
-        _, _, _, cik_raw, _, _, _ = parse_efts_hit(hits[0])
+    for ticker, div_type in watchlist:
+        # Resolve CIK via SEC submissions (ticker → CIK)
+        tickers_json = fetch("https://www.sec.gov/files/company_tickers.json")
+        time.sleep(0.5)
+        cik_raw = ""
+        if tickers_json:
+            for entry in tickers_json.values():
+                if entry.get("ticker", "").upper() == ticker.upper():
+                    cik_raw = str(entry.get("cik_str", "")).zfill(10)
+                    break
         if not cik_raw:
             continue
-        cik_padded = str(cik_raw).zfill(10)
+        cik_padded = cik_raw.zfill(10)
         facts_data = fetch(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik_padded}.json")
         time.sleep(1)
         if not facts_data:
             continue
         facts = facts_data.get("facts", {}).get("us-gaap", {})
-        nii_key  = next((k for k in ("NetInvestmentIncome", "InvestmentIncomeNet",
-                                     "InvestmentIncomeLoss") if k in facts), None)
-        dist_key = next((k for k in ("DistributionsPaid", "DividendsPaid",
-                                     "PaymentsOfDividends",
-                                     "DistributionMadeToLimitedPartnerCashDistributionsPaid")
-                         if k in facts), None)
-        if not nii_key or not dist_key:
-            continue
 
-        def latest_annual(concept_data):
-            units = concept_data.get("units", {})
-            for unit_vals in units.values():
-                annual = [v for v in unit_vals
-                          if v.get("form") in ("10-K", "10-K/A") and "frame" not in v]
-                if annual:
-                    annual.sort(key=lambda v: v.get("end", ""), reverse=True)
-                    return annual[0].get("val", 0)
-            return 0
+        nii   = latest_annual(facts, "NetInvestmentIncome")
+        dist  = abs(latest_annual(facts, "PaymentsOfDividends"))
+        # BDC-specific: accumulated undistributed ordinary income (spillover)
+        spillover = latest_annual(facts, "InvestmentCompanyDistributableEarningsLossAccumulatedOrdinaryIncomeLoss")
+        # REIT: undistributed earnings (negative = over-paid, positive = spillover banked)
+        undist = latest_annual(facts, "UndistributedEarnings")
 
-        nii  = latest_annual(facts[nii_key])
-        dist = abs(latest_annual(facts[dist_key]))
-        if dist > 0 and nii > dist * 1.15:
+        flagged = False
+        note_parts = []
+
+        if nii > 0 and dist > 0 and nii > dist * 1.15:
+            note_parts.append(f"NII={nii:,.0f} > Distributions={dist:,.0f} ({(nii/dist-1)*100:.0f}% excess)")
+            flagged = True
+
+        if spillover > 0 and dist > 0 and spillover > dist * 0.10:
+            note_parts.append(f"Accumulated spillover income={spillover:,.0f} ({spillover/dist*100:.0f}% of annual dist)")
+            flagged = True
+
+        if div_type == "reit" and undist > 0 and dist > 0 and undist > dist * 0.10:
+            note_parts.append(f"Undistributed earnings={undist:,.0f} ({undist/dist*100:.0f}% of annual dist)")
+            flagged = True
+
+        if flagged:
             results.append({
                 "source": "xbrl_nii",
                 "company": ticker,
-                "cik": cik_raw,
+                "cik": cik_padded,
                 "ticker": ticker,
                 "date": today(),
                 "link": f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik_padded}.json",
                 "confidence": "HIGH",
                 "signal_type": "leading_indicator",
-                "notes": (f"Over-earned NII: NII={nii:,.0f}, Distributions={dist:,.0f} "
-                          f"({(nii/dist - 1)*100:.0f}% excess). Spillover dividend likely."),
+                "notes": "Spillover income likely: " + "; ".join(note_parts),
             })
     return results
 
-# ── Synthesize: deduplicate, resolve missing tickers, rank ───────────────────
+# ── Synthesize: deduplicate, resolve missing tickers, upgrade confidence, rank ─
 def synthesize(all_results):
+    priority = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+
+    # Dedup by (company_lower[:40], date[:10])
     seen = {}
     for r in all_results:
         key = (r.get("company", "").lower().strip()[:40], r.get("date", "")[:10])
         if key not in seen:
+            r.setdefault("sources", [r.get("source", "")])
             seen[key] = r
         else:
             existing = seen[key]
-            priority = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+            existing.setdefault("sources", [existing.get("source", "")])
+            src = r.get("source", "")
+            if src not in existing["sources"]:
+                existing["sources"].append(src)
+            # Keep highest confidence
             if priority.get(r.get("confidence", "LOW"), 0) > priority.get(existing.get("confidence", "LOW"), 0):
-                r["sources"] = [existing.get("source", ""), r.get("source", "")]
+                r["sources"] = existing["sources"]
                 seen[key] = r
-            else:
-                existing.setdefault("sources", [existing.get("source", "")]).append(r.get("source", ""))
-                if len(existing.get("sources", [])) > 1:
-                    existing["confidence"] = "HIGH"  # multi-source = promote confidence
 
     deduped = list(seen.values())
+
+    # Confidence upgrade rules (applied after dedup):
+    # 1. Any result corroborated by 2+ distinct sources → at least MEDIUM
+    # 2. Any result corroborated by 3+ distinct sources → HIGH
+    # 3. REIT + asset_sale source → always HIGH (IRS distribution requirement)
+    for r in deduped:
+        sources = r.get("sources", [r.get("source", "")])
+        n_sources = len(set(s for s in sources if s))
+        if n_sources >= 3 and r.get("confidence") != "HIGH":
+            r["confidence"] = "HIGH"
+            r["notes"] = r.get("notes", "") + f" [upgraded: {n_sources} sources]"
+        elif n_sources == 2 and r.get("confidence") == "LOW":
+            r["confidence"] = "MEDIUM"
+            r["notes"] = r.get("notes", "") + " [upgraded: 2 sources]"
+        if r.get("source") == "edgar_asset_sale":
+            r["confidence"] = "HIGH"  # REIT Item 2.01 is always HIGH
 
     # Resolve tickers for SEC results that still lack one
     for r in deduped:
