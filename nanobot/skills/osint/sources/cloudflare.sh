@@ -29,7 +29,7 @@ fi
 
 raw=$(curl -sf --max-time 10 \
   -H "Authorization: Bearer ${TOKEN}" \
-  "https://api.cloudflare.com/client/v4/radar/http/summary/status_code?dateRange=1d" 2>/dev/null) || {
+  "https://api.cloudflare.com/client/v4/radar/attacks/layer3/timeseries?dateRange=7d" 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0

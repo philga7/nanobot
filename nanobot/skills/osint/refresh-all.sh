@@ -9,6 +9,15 @@ SOURCES_DIR="${SCRIPT_DIR}/sources"
 CACHE_DIR="${SCRIPT_DIR}/cache"
 mkdir -p "$CACHE_DIR"
 
+# Source OSINT API keys if .env exists
+OSINT_ENV="${HOME}/.wrenvps/osint/.env"
+if [[ -f "$OSINT_ENV" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$OSINT_ENV"
+  set +a
+fi
+
 FLAG="${1:-}"
 TIMEOUT=15  # Max seconds per source fetch
 MAX_PARALLEL=10
@@ -69,4 +78,18 @@ for pid in "${pids[@]}"; do
   fi
 done
 
-echo "Refresh complete: ${ok} ok, ${fail} failed (of ${#scripts[@]} total)" >&2
+# Post-run: check cached JSON for sources that exited 0 but have errors in data
+data_errors=0
+for script in "${scripts[@]}"; do
+  name="$(basename "$script" .sh)"
+  cache_file="${CACHE_DIR}/${name}.json"
+  if [[ -f "$cache_file" ]] && jq -e '.error' "$cache_file" > /dev/null 2>&1; then
+    data_errors=$((data_errors + 1))
+  fi
+done
+
+if (( data_errors > 0 )); then
+  echo "Refresh complete: ${ok} ok (${data_errors} with data errors), ${fail} failed (of ${#scripts[@]} total)" >&2
+else
+  echo "Refresh complete: ${ok} ok, ${fail} failed (of ${#scripts[@]} total)" >&2
+fi

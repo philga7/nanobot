@@ -28,9 +28,21 @@ if [[ -z "$EMAIL" || -z "$PASSWORD" ]]; then
   exit 0
 fi
 
+# Warn if key looks too short (ACLED keys are typically 32+ chars)
+if (( ${#PASSWORD} < 20 )); then
+  echo "WARNING: OSINT_ACLED_PASSWORD is only ${#PASSWORD} chars (expected 32+). May be invalid/expired." >&2
+fi
+
+# Test DNS resolution before the API call to give a clearer error
+if ! host api.acleddata.com > /dev/null 2>&1 && ! nslookup api.acleddata.com > /dev/null 2>&1; then
+  result="{\"source\":\"${SOURCE}\",\"error\":\"DNS resolution failed for api.acleddata.com — check network/DNS config\",\"fetched_at\":\"${ts}\"}"
+  echo "$result" | tee "$CACHE_FILE"
+  exit 0
+fi
+
 raw=$(curl -sf --max-time 15 \
   "https://api.acleddata.com/acled/read?key=${PASSWORD}&email=${EMAIL}&limit=20&page=1" 2>/dev/null) || {
-  result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
+  result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed (check credentials and network)\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
 }
