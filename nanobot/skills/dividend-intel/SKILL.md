@@ -172,11 +172,19 @@ Multi-source, layered scanner for special/extra dividend signals. Three layers: 
 python3 << 'SCANNER_EOF'
 import json, os, re, time, urllib.request, urllib.parse
 from datetime import datetime, timedelta, timezone
+import yfinance as yf
 
 WINDOW_DAYS    = 7    # reactive layers lookback
 PROACTIVE_DAYS = 30   # proactive layers lookback
 USER_AGENT     = "dividend-intel/1.0 contact@example.com"
 HEADERS        = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+
+AMOUNT_PATTERNS = [
+    re.compile(r"\$([0-9]+(?:\.[0-9]{1,4})?)\s*per\s+share", re.IGNORECASE),
+    re.compile(r"\$([0-9]+(?:\.[0-9]{1,4})?)\s*special\s+cash\s+dividend", re.IGNORECASE),
+    re.compile(r"special\s+dividend\s+of\s+\$([0-9]+(?:\.[0-9]{1,4})?)", re.IGNORECASE),
+    re.compile(r"extra\s+dividend\s+of\s+\$([0-9]+(?:\.[0-9]{1,4})?)\s*per\s+share", re.IGNORECASE),
+]
 
 def fetch(url, retries=2, delay=2):
     for attempt in range(retries + 1):
@@ -197,6 +205,19 @@ def fetch_xml(url):
             return r.read().decode(errors="replace")
     except Exception:
         return None
+
+def extract_amount_per_share(*texts):
+    blob = " ".join(t for t in texts if t)
+    if not blob:
+        return None
+    for pat in AMOUNT_PATTERNS:
+        m = pat.search(blob)
+        if m:
+            try:
+                return round(float(m.group(1)), 4)
+            except Exception:
+                return None
+    return None
 
 def since(days):
     return (datetime.now(tz=timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -304,6 +325,7 @@ def layer1_edgar_atom(window=WINDOW_DAYS):
             "link": link_s,
             "confidence": "HIGH",
             "signal_type": "announced",
+            "amount_per_share": extract_amount_per_share(title_s, summary_s),
             "notes": "SEC EDGAR Atom feed — formal 8-K filing",
         })
     return results
@@ -347,6 +369,10 @@ def layer1_edgar_efts(window=WINDOW_DAYS):
                 "link": link,
                 "confidence": "HIGH",
                 "signal_type": "announced",
+                "amount_per_share": extract_amount_per_share(
+                    str(h.get("_source", {}).get("file_desc", "")),
+                    str(h.get("highlight", {})),
+                ),
                 "notes": f"EFTS query: {label}",
             })
     return results
@@ -400,6 +426,10 @@ def layer2_efts_broad(window=WINDOW_DAYS):
                 "link": link,
                 "confidence": "MEDIUM",
                 "signal_type": "press_release",
+                "amount_per_share": extract_amount_per_share(
+                    str(h.get("_source", {}).get("file_desc", "")),
+                    str(h.get("highlight", {})),
+                ),
                 "notes": f"8-K Items {items_list} — EFTS broad query: {label}.",
             })
     return results
@@ -449,6 +479,7 @@ def layer3_activist_13d(window=PROACTIVE_DAYS):
                 "link": link_s,
                 "confidence": "HIGH" if hit_kws else "MEDIUM",
                 "signal_type": "leading_indicator",
+                "amount_per_share": extract_amount_per_share(title_s, summary_s),
                 "notes": (f"Schedule {form_label} activist filing. Keywords: {hit_kws}"
                           if hit_kws else f"Activist filing ({form_label}) via Atom — review for capital return thesis"),
             })
@@ -528,6 +559,10 @@ def layer3_asset_sales(window=PROACTIVE_DAYS):
                 "link": link,
                 "confidence": "HIGH",
                 "signal_type": "leading_indicator",
+                "amount_per_share": extract_amount_per_share(
+                    str(h.get("_source", {}).get("file_desc", "")),
+                    str(h.get("highlight", {})),
+                ),
                 "notes": f"8-K Item 2.01 — asset sale completed ({label}). REIT — IRS requires distribution of net proceeds.",
             })
     return results
@@ -623,6 +658,7 @@ def layer3_xbrl_nii(watchlist=None):
                 "link": f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik_padded}.json",
                 "confidence": "HIGH",
                 "signal_type": "leading_indicator",
+                "amount_per_share": None,
                 "notes": "Spillover income likely: " + "; ".join(note_parts),
             })
     return results
@@ -698,11 +734,55 @@ def synthesize(all_results):
             r["ticker"] = cik_to_ticker(r["cik"])
             time.sleep(0.5)
 
+    # Ensure all results carry the enrichment keys before price pass
+    for r in deduped:
+        r.setdefault("amount_per_share", None)
+        r["current_price"] = None
+        r["special_div_yield"] = None
+
     order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     deduped.sort(key=lambda r: (order.get(r.get("confidence", "LOW"), 2),
                                  r.get("date", "") or ""))
     deduped.reverse()
     return deduped
+
+def enrich_with_prices(results):
+    tickers = sorted({r.get("ticker", "").upper().strip() for r in results if r.get("ticker")})
+    if not tickers:
+        return results
+
+    prices = {}
+    try:
+        data = yf.download(tickers=tickers, period="1d", interval="1d", progress=False, threads=True)
+        if not data.empty:
+            if hasattr(data.columns, "levels"):
+                close = data.get("Close")
+                if close is not None:
+                    for tk in tickers:
+                        try:
+                            val = close[tk].dropna().iloc[-1]
+                            prices[tk] = float(val)
+                        except Exception:
+                            prices[tk] = None
+            else:
+                try:
+                    val = data["Close"].dropna().iloc[-1]
+                    prices[tickers[0]] = float(val)
+                except Exception:
+                    prices[tickers[0]] = None
+    except Exception:
+        pass
+
+    for r in results:
+        tk = r.get("ticker", "").upper().strip()
+        amt = r.get("amount_per_share")
+        px = prices.get(tk)
+        r["current_price"] = round(px, 2) if isinstance(px, (int, float)) else None
+        if isinstance(amt, (int, float)) and isinstance(px, (int, float)) and px > 0:
+            r["special_div_yield"] = round((amt / px) * 100, 2)
+        else:
+            r["special_div_yield"] = None
+    return results
 
 # ── Run all layers ────────────────────────────────────────────────────────────
 import sys
@@ -759,6 +839,7 @@ def layer4_newsletter_signals():
             "link": "",
             "confidence": confidence,
             "signal_type": "newsletter_" + sig.get("signalType", ""),
+            "amount_per_share": extract_amount_per_share(sig.get("summary", ""), sig.get("rawExcerpt", "")),
             "notes": (
                 f"Newsletter signal from {sig.get('source', 'unknown')} — "
                 f"{sig.get('summary', '')} | Subject: {sig.get('subject', '')[:80]} | "
@@ -774,7 +855,7 @@ try:
 except Exception as e:
     print(f"  Layer 4:  Newsletter signals:           ERROR: {e}", flush=True)
 
-final = synthesize(all_results)
+final = enrich_with_prices(synthesize(all_results))
 print(json.dumps(final, indent=2))
 SCANNER_EOF
 ```
@@ -790,8 +871,28 @@ Output: JSON array. Each item has:
 | `source` | `edgar_rss`, `edgar_efts`, `stockanalysis`, `benzinga`, `globenewswire`, `edgar_sc13d`, `edgar_asset_sale`, `xbrl_nii` |
 | `confidence` | `HIGH` / `MEDIUM` / `LOW` |
 | `signal_type` | `announced` / `press_release` / `leading_indicator` |
+| `amount_per_share` | Parsed special-dividend amount per share in USD, or `null` |
+| `current_price` | Current regular-market price from yfinance batch download, or `null` |
+| `special_div_yield` | `(amount_per_share / current_price) * 100`, rounded to 2 decimals, or `null` |
 | `link` | SEC filing URL or press release URL |
 | `notes` | Human-readable context |
+
+Example:
+
+```json
+[
+  {
+    "ticker": "ABC",
+    "company": "ABC Corp",
+    "date": "2026-04-08",
+    "amount_per_share": 0.75,
+    "current_price": 32.4,
+    "special_div_yield": 2.31,
+    "confidence": "HIGH",
+    "signal_type": "announced"
+  }
+]
+```
 
 **Confidence rules:**
 - `HIGH` — Formal 8-K with dividend keywords, REIT Item 2.01 (IRS-mandated), BDC over-earned NII, or multi-source corroboration
@@ -901,7 +1002,8 @@ Task:
    [if buy_candidate and today=buyDay: "★ BUY CANDIDATE — below SMA200"]
 
    SPECIAL DIVIDENDS DETECTED
-   [company] — filed [date] ([link])
+   [TICKER] — $0.75/share special div (2.3% yield at $32.40) — filed [date]
+   [if amount_per_share is null: [TICKER] — special dividend announced — filed [date]]
    (or: None detected this week)
 
    SCREENER TOP PICKS
