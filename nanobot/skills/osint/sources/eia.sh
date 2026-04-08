@@ -28,7 +28,7 @@ if [[ -z "$KEY" ]]; then
 fi
 
 raw=$(curl -sf --max-time 10 \
-  "https://api.eia.gov/v2/petroleum/pri/spt/data/?api_key=${KEY}&frequency=daily&data[0]=value&sort[0][column]=period&sort[0][direction]=desc&length=10" 2>/dev/null) || {
+  "https://api.eia.gov/v2/petroleum/pri/spt/data/?api_key=${KEY}&frequency=daily&data%5B0%5D=value&sort%5B0%5D%5Bcolumn%5D=period&sort%5B0%5D%5Bdirection%5D=desc&length=10" 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0

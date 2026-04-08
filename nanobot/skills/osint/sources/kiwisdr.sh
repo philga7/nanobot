@@ -39,7 +39,9 @@ if not match:
     sys.exit(0)
 
 try:
-    receivers = json.loads(match.group())
+    # KiwiSDR JS file has trailing commas — strip them before parsing
+    cleaned = re.sub(r',\s*([}\]])', r'\1', match.group())
+    receivers = json.loads(cleaned)
     # Count active, get top locations
     active = [r for r in receivers if r.get('status', '') == 'active']
     locations = {}

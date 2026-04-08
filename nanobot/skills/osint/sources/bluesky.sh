@@ -21,7 +21,7 @@ fi
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 raw=$(curl -sf --max-time 10 \
-  "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=breaking+news&limit=15&sort=latest" 2>/dev/null) || {
+  "https://public.api.bsky.app/xrpc/app.bsky.unspecced.getTrendingTopics" 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
@@ -30,15 +30,9 @@ raw=$(curl -sf --max-time 10 \
 result=$(echo "$raw" | jq -c --arg ts "$ts" '{
   source: "bluesky",
   fetched_at: $ts,
-  count: (.posts // [] | length),
-  posts: [(.posts // [])[:15][] | {
-    text: .record.text,
-    author: .author.handle,
-    created_at: .record.createdAt,
-    like_count: .likeCount,
-    repost_count: .repostCount,
-    reply_count: .replyCount
-  }]
+  count: (.topics // [] | length),
+  topics: [(.topics // [])[:15][] | {topic, link}],
+  suggested: [(.suggested // [])[:10][] | {topic, link}]
 }' 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"JSON parse failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"

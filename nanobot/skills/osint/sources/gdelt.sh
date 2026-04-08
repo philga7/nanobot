@@ -20,11 +20,16 @@ fi
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-raw=$(curl -sf --max-time 10 \
-  "https://api.gdeltproject.org/api/v2/doc/doc?query=conflict%20OR%20crisis%20OR%20military&mode=ArtList&maxrecords=15&format=json&sort=DateDesc" 2>/dev/null) || {
-  result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
-  echo "$result" | tee "$CACHE_FILE"
-  exit 0
+GDELT_URL="https://api.gdeltproject.org/api/v2/doc/doc?query=conflict%20OR%20crisis%20OR%20military&mode=ArtList&maxrecords=15&format=json&sort=DateDesc"
+
+raw=$(curl -sf --max-time 20 "$GDELT_URL" 2>/dev/null) || {
+  # GDELT rate-limits to 1 request per 5s — retry after backoff
+  sleep 6
+  raw=$(curl -sf --max-time 20 "$GDELT_URL" 2>/dev/null) || {
+    result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed (rate limited)\",\"fetched_at\":\"${ts}\"}"
+    echo "$result" | tee "$CACHE_FILE"
+    exit 0
+  }
 }
 
 result=$(echo "$raw" | jq -c --arg ts "$ts" '{

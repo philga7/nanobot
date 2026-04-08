@@ -20,39 +20,28 @@ fi
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# AirNow current observations for major US cities (no key needed for public feed)
-raw=$(curl -sf --max-time 10 \
-  "https://www.airnow.gov/rss/aqi-702.xml" 2>/dev/null) || {
+# EPA ECHO enforcement compliance — public, no key needed
+raw=$(curl -sf --max-time 15 \
+  "https://echodata.epa.gov/echo/cwa_rest_services.get_facility_info?output=JSON&p_st=CA&p_pv=Y&p_rows=10" 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
 }
 
-result=$(python3 -c "
-import xml.etree.ElementTree as ET
-import json, sys
-
-xml_data = sys.stdin.read()
-try:
-    root = ET.fromstring(xml_data)
-    items = []
-    for item in root.findall('.//item')[:10]:
-        items.append({
-            'title': (item.find('title').text or '') if item.find('title') is not None else '',
-            'description': (item.find('description').text or '')[:300] if item.find('description') is not None else '',
-            'link': (item.find('link').text or '') if item.find('link') is not None else '',
-            'pubDate': (item.find('pubDate').text or '') if item.find('pubDate') is not None else ''
-        })
-    print(json.dumps({
-        'source': 'epa',
-        'fetched_at': '$ts',
-        'count': len(items),
-        'data': items
-    }))
-except Exception as e:
-    print(json.dumps({'source': 'epa', 'error': str(e), 'fetched_at': '$ts'}))
-" <<< "$raw" 2>/dev/null) || {
-  result="{\"source\":\"${SOURCE}\",\"error\":\"parse failed\",\"fetched_at\":\"${ts}\"}"
+result=$(echo "$raw" | jq -c --arg ts "$ts" '{
+  source: "epa",
+  fetched_at: $ts,
+  note: "EPA ECHO CWA enforcement — facilities with violations",
+  count: (.Results.QueryRows // "0" | tonumber),
+  facilities: [(.Results.Facilities // [])[:10][] | {
+    name: .CWPName,
+    city: .CWPCity,
+    state: .CWPState,
+    status: .CWPStatus,
+    violations: .CWPSNCStatus
+  }]
+}' 2>/dev/null) || {
+  result="{\"source\":\"${SOURCE}\",\"error\":\"JSON parse failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
 }

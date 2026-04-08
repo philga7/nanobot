@@ -21,8 +21,9 @@ fi
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Finnish Digitraffic maritime API — free, no key, real AIS data
-raw=$(curl -sf --max-time 10 \
-  "https://meri.digitraffic.fi/api/vessel-location/v1/locations" 2>/dev/null) || {
+raw=$(curl -sf --compressed --max-time 15 \
+  -H "Accept: application/json" \
+  "https://meri.digitraffic.fi/api/ais/v1/locations" 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0

@@ -22,7 +22,8 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 raw=$(curl -sf --max-time 10 \
   -H "User-Agent: nanobot-osint/1.0 (contact@nanobot.local)" \
-  "https://api.weather.gov/alerts/active?severity=Extreme,Severe&limit=15" 2>/dev/null) || {
+  -H "Accept: application/geo+json" \
+  "https://api.weather.gov/alerts/active?severity=Extreme,Severe" 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
