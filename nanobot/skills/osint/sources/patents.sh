@@ -20,11 +20,16 @@ fi
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-raw=$(curl -sf --max-time 10 \
-  "https://developer.uspto.gov/ibd-api/v1/application/publications?searchText=artificial+intelligence&start=0&rows=10" 2>/dev/null) || {
-  result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
-  echo "$result" | tee "$CACHE_FILE"
-  exit 0
+USPTO_URL="https://developer.uspto.gov/ibd-api/v1/application/publications?searchText=artificial+intelligence&start=0&rows=10"
+
+raw=$(curl -sf --max-time 10 "$USPTO_URL" 2>/dev/null) || {
+  # Single retry — USPTO often returns 503 intermittently
+  sleep 3
+  raw=$(curl -sf --max-time 10 "$USPTO_URL" 2>/dev/null) || {
+    result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed (after retry)\",\"fetched_at\":\"${ts}\"}"
+    echo "$result" | tee "$CACHE_FILE"
+    exit 0
+  }
 }
 
 result=$(echo "$raw" | jq -c --arg ts "$ts" '{

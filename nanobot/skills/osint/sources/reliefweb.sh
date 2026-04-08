@@ -20,8 +20,8 @@ fi
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-raw=$(curl -sf --max-time 10 \
-  "https://api.reliefweb.int/v1/reports?appname=nanobot-osint&limit=15&preset=latest&fields[include][]=title&fields[include][]=url&fields[include][]=date.created&fields[include][]=source.name&fields[include][]=country.name" 2>/dev/null) || {
+raw=$(curl -sf -g --max-time 10 \
+  "https://api.reliefweb.int/v2/reports?appname=nanobot-osint&limit=15&preset=latest&fields%5Binclude%5D%5B%5D=title&fields%5Binclude%5D%5B%5D=url&fields%5Binclude%5D%5B%5D=date.created&fields%5Binclude%5D%5B%5D=source.name&fields%5Binclude%5D%5B%5D=country.name" 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0

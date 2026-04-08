@@ -20,36 +20,26 @@ fi
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+# WHO Disease Outbreak News — JSON API (RSS feed is defunct)
 raw=$(curl -sf --max-time 10 \
-  "https://www.who.int/feeds/entity/don/en/rss.xml" 2>/dev/null) || {
+  'https://www.who.int/api/hubs/diseaseoutbreaknews?$top=10&$orderby=PublicationDate%20desc' 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
 }
 
-# Parse RSS XML to JSON using python3 (available in nanobot env)
-result=$(python3 -c "
-import xml.etree.ElementTree as ET
-import json, sys
-
-xml_data = sys.stdin.read()
-root = ET.fromstring(xml_data)
-items = []
-for item in root.findall('.//item')[:10]:
-    items.append({
-        'title': (item.find('title').text or '') if item.find('title') is not None else '',
-        'link': (item.find('link').text or '') if item.find('link') is not None else '',
-        'pubDate': (item.find('pubDate').text or '') if item.find('pubDate') is not None else '',
-        'description': (item.find('description').text or '')[:200] if item.find('description') is not None else ''
-    })
-print(json.dumps({
-    'source': 'who',
-    'fetched_at': '$ts',
-    'count': len(items),
-    'outbreaks': items
-}))
-" <<< "$raw" 2>/dev/null) || {
-  result="{\"source\":\"${SOURCE}\",\"error\":\"XML parse failed\",\"fetched_at\":\"${ts}\"}"
+result=$(echo "$raw" | jq -c --arg ts "$ts" '{
+  source: "who",
+  fetched_at: $ts,
+  count: (.value // [] | length),
+  outbreaks: [(.value // [])[:10][] | {
+    title: .Title,
+    date: .PublicationDate,
+    id: .Id,
+    url: ("https://www.who.int/emergencies/disease-outbreak-news/" + (.UrlName // ""))
+  }]
+}' 2>/dev/null) || {
+  result="{\"source\":\"${SOURCE}\",\"error\":\"JSON parse failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
 }
