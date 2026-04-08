@@ -28,24 +28,33 @@ if [[ -z "$EMAIL" || -z "$PASSWORD" ]]; then
   exit 0
 fi
 
-# Warn if key looks too short (ACLED keys are typically 32+ chars)
-if (( ${#PASSWORD} < 20 )); then
-  echo "WARNING: OSINT_ACLED_PASSWORD is only ${#PASSWORD} chars (expected 32+). May be invalid/expired." >&2
+# Dynamic date filter: events from the last 7 days
+event_date=$(date -u -v-7d +%Y-%m-%d 2>/dev/null || date -u -d '7 days ago' +%Y-%m-%d 2>/dev/null || echo "")
+
+ACLED_URL="https://api.acleddata.com/acled/read?key=${PASSWORD}&email=${EMAIL}&limit=20"
+if [[ -n "$event_date" ]]; then
+  ACLED_URL="${ACLED_URL}&event_date=${event_date}&event_date_where=%3E%3D"
 fi
 
-# Test DNS resolution before the API call to give a clearer error
-if ! host api.acleddata.com > /dev/null 2>&1 && ! nslookup api.acleddata.com > /dev/null 2>&1; then
-  result="{\"source\":\"${SOURCE}\",\"error\":\"DNS resolution failed for api.acleddata.com — check network/DNS config\",\"fetched_at\":\"${ts}\"}"
+# Try primary endpoint; fall back with DNS pinning if resolution fails
+http_code=$(curl -s -o /tmp/acled_raw.json -w "%{http_code}" --max-time 15 "$ACLED_URL" 2>/dev/null) || http_code="000"
+
+if [[ "$http_code" == "000" ]]; then
+  # DNS or network failure — retry with Cloudflare IP pinning
+  http_code=$(curl -s -o /tmp/acled_raw.json -w "%{http_code}" --max-time 15 \
+    --resolve "api.acleddata.com:443:172.66.175.97" "$ACLED_URL" 2>/dev/null) || http_code="000"
+fi
+
+if [[ "$http_code" != "200" ]]; then
+  body=$(head -c 200 /tmp/acled_raw.json 2>/dev/null | tr '"' "'" || echo "")
+  result="{\"source\":\"${SOURCE}\",\"error\":\"HTTP ${http_code}\",\"detail\":\"${body}\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
+  rm -f /tmp/acled_raw.json
   exit 0
 fi
 
-raw=$(curl -sf --max-time 15 \
-  "https://api.acleddata.com/acled/read?key=${PASSWORD}&email=${EMAIL}&limit=20&page=1" 2>/dev/null) || {
-  result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed (check credentials and network)\",\"fetched_at\":\"${ts}\"}"
-  echo "$result" | tee "$CACHE_FILE"
-  exit 0
-}
+raw=$(cat /tmp/acled_raw.json)
+rm -f /tmp/acled_raw.json
 
 result=$(echo "$raw" | jq -c --arg ts "$ts" '{
   source: "acled",
