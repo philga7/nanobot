@@ -14,6 +14,15 @@ SOURCES_DIR="${SCRIPT_DIR}/sources"
 CACHE_DIR="${SCRIPT_DIR}/cache"
 mkdir -p "$CACHE_DIR"
 
+# Source OSINT API keys if .env exists
+OSINT_ENV="${HOME}/.wrenvps/osint/.env"
+if [[ -f "$OSINT_ENV" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$OSINT_ENV"
+  set +a
+fi
+
 FLAG="${1:-}"
 TIMEOUT=15
 MAX_PARALLEL=10
@@ -118,4 +127,9 @@ timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo '}'
 }
 
-echo "Brief data ready: ${source_count:-0} sources combined" >&2
+# Report source quality summary
+if (( error_count > 0 )); then
+  echo "Brief data ready: ${source_count:-0} sources combined (${error_count} with errors)" >&2
+else
+  echo "Brief data ready: ${source_count:-0} sources combined" >&2
+fi

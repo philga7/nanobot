@@ -20,11 +20,16 @@ fi
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-raw=$(curl -sf --max-time 15 \
-  "https://opensky-network.org/api/states/all?lamin=25&lomin=-130&lamax=50&lomax=-60" 2>/dev/null) || {
-  result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed or rate limited\",\"fetched_at\":\"${ts}\"}"
-  echo "$result" | tee "$CACHE_FILE"
-  exit 0
+OPENSKY_URL="https://opensky-network.org/api/states/all?lamin=25&lomin=-130&lamax=50&lomax=-60"
+
+raw=$(curl -sf --max-time 15 "$OPENSKY_URL" 2>/dev/null) || {
+  # Single retry after 3s backoff (OpenSky has intermittent availability)
+  sleep 3
+  raw=$(curl -sf --max-time 15 "$OPENSKY_URL" 2>/dev/null) || {
+    result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed or rate limited (after retry)\",\"fetched_at\":\"${ts}\"}"
+    echo "$result" | tee "$CACHE_FILE"
+    exit 0
+  }
 }
 
 result=$(echo "$raw" | jq -c --arg ts "$ts" '{

@@ -27,8 +27,8 @@ headers=$(curl -sI --max-time 10 \
   exit 0
 }
 
-last_modified=$(echo "$headers" | grep -i "last-modified" | sed 's/[Ll]ast-[Mm]odified: *//;s/\r//' | head -1)
-content_length=$(echo "$headers" | grep -i "content-length" | sed 's/[Cc]ontent-[Ll]ength: *//;s/\r//' | head -1)
+last_modified=$(echo "$headers" | grep -i "last-modified" | sed 's/[Ll]ast-[Mm]odified: *//;s/\r//' | head -1 || true)
+content_length=$(echo "$headers" | grep -i "content-length" | sed 's/[Cc]ontent-[Ll]ength: *//;s/\r//' | head -1 || true)
 
 result=$(jq -nc --arg ts "$ts" --arg lm "${last_modified:-unknown}" --arg cl "${content_length:-unknown}" '{
   source: "ofac",
