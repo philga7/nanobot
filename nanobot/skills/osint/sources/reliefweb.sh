@@ -20,26 +20,39 @@ fi
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-raw=$(curl -sf -g --max-time 10 \
-  "https://api.reliefweb.int/v2/reports?appname=nanobot-osint&limit=15&preset=latest&fields%5Binclude%5D%5B%5D=title&fields%5Binclude%5D%5B%5D=url&fields%5Binclude%5D%5B%5D=date.created&fields%5Binclude%5D%5B%5D=source.name&fields%5Binclude%5D%5B%5D=country.name" 2>/dev/null) || {
-  result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
+# ReliefWeb API v2 requires a registered appname — use RSS feed instead
+raw=$(curl -sf --max-time 10 \
+  "https://reliefweb.int/updates/rss.xml" 2>/dev/null) || {
+  result="{\"source\":\"${SOURCE}\",\"error\":\"RSS feed request failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
 }
 
-result=$(echo "$raw" | jq -c --arg ts "$ts" '{
-  source: "reliefweb",
-  fetched_at: $ts,
-  count: (.count // 0),
-  reports: [(.data // [])[:15][] | {
-    title: .fields.title,
-    url: .fields.url,
-    date: .fields.date.created,
-    source: [(.fields.source // [])[] | .name],
-    country: [(.fields.country // [])[] | .name]
-  }]
-}' 2>/dev/null) || {
-  result="{\"source\":\"${SOURCE}\",\"error\":\"JSON parse failed\",\"fetched_at\":\"${ts}\"}"
+result=$(python3 -c "
+import xml.etree.ElementTree as ET
+import json, sys
+
+xml_data = sys.stdin.read()
+try:
+    root = ET.fromstring(xml_data)
+    items = []
+    for item in root.findall('.//item')[:15]:
+        items.append({
+            'title': (item.find('title').text or '') if item.find('title') is not None else '',
+            'url': (item.find('link').text or '') if item.find('link') is not None else '',
+            'date': (item.find('pubDate').text or '') if item.find('pubDate') is not None else '',
+            'description': (item.find('description').text or '')[:200] if item.find('description') is not None else ''
+        })
+    print(json.dumps({
+        'source': 'reliefweb',
+        'fetched_at': '$ts',
+        'count': len(items),
+        'reports': items
+    }))
+except Exception as e:
+    print(json.dumps({'source': 'reliefweb', 'error': str(e), 'fetched_at': '$ts'}))
+" <<< "$raw" 2>/dev/null) || {
+  result="{\"source\":\"${SOURCE}\",\"error\":\"XML parse failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
 }

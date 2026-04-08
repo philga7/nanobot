@@ -22,15 +22,25 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 GDELT_URL="https://api.gdeltproject.org/api/v2/doc/doc?query=conflict%20OR%20crisis%20OR%20military&mode=ArtList&maxrecords=15&format=json&sort=DateDesc"
 
-raw=$(curl -sf --max-time 20 "$GDELT_URL" 2>/dev/null) || {
-  # GDELT rate-limits to 1 request per 5s — retry after backoff
+# GDELT rate-limits to 1 request per 5 seconds per IP
+http_code=$(curl -s -o /tmp/gdelt_raw.json -w "%{http_code}" --max-time 20 "$GDELT_URL" 2>/dev/null) || http_code="000"
+
+if [[ "$http_code" == "429" || "$http_code" == "000" ]]; then
+  # Rate limited or timeout — retry after backoff
   sleep 6
-  raw=$(curl -sf --max-time 20 "$GDELT_URL" 2>/dev/null) || {
-    result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed (rate limited)\",\"fetched_at\":\"${ts}\"}"
-    echo "$result" | tee "$CACHE_FILE"
-    exit 0
-  }
-}
+  http_code=$(curl -s -o /tmp/gdelt_raw.json -w "%{http_code}" --max-time 20 "$GDELT_URL" 2>/dev/null) || http_code="000"
+fi
+
+if [[ "$http_code" != "200" ]]; then
+  body=$(head -c 200 /tmp/gdelt_raw.json 2>/dev/null | tr '"' "'" || echo "")
+  result="{\"source\":\"${SOURCE}\",\"error\":\"HTTP ${http_code}\",\"detail\":\"${body}\",\"fetched_at\":\"${ts}\"}"
+  echo "$result" | tee "$CACHE_FILE"
+  rm -f /tmp/gdelt_raw.json
+  exit 0
+fi
+
+raw=$(cat /tmp/gdelt_raw.json)
+rm -f /tmp/gdelt_raw.json
 
 result=$(echo "$raw" | jq -c --arg ts "$ts" '{
   source: "gdelt",

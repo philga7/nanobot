@@ -27,6 +27,9 @@ if [[ -z "$KEY" ]]; then
   exit 0
 fi
 
+# NOTE: Brackets in query params MUST be URL-encoded (%5B = [, %5D = ])
+# Otherwise curl interprets them as glob/range patterns and the request fails silently.
+# Do NOT "fix" these back to literal brackets.
 raw=$(curl -sf --max-time 10 \
   "https://api.eia.gov/v2/petroleum/pri/spt/data/?api_key=${KEY}&frequency=daily&data%5B0%5D=value&sort%5B0%5D%5Bcolumn%5D=period&sort%5B0%5D%5Bdirection%5D=desc&length=10" 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
