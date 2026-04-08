@@ -1,9 +1,9 @@
 ---
 name: osint
 description: >-
-  OSINT intelligence briefing. Queries 27 open-source intelligence APIs
+  OSINT intelligence briefing. Queries 28 open-source intelligence APIs
   (GDELT, FRED, FIRMS, EIA, BLS, CISA, markets, sanctions, conflict, weather,
-  maritime, social), caches results for 15 minutes, and synthesizes a
+  maritime, social, NASA missions), caches results for 15 minutes, and synthesizes a
   leverage-first 8-section briefing. Trigger with "brief me", "intel brief",
   "osint brief", "what's going on", "latest intelligence", or "refresh intel".
 metadata: {"nanobot":{"emoji":"🔍","requires":{"bins":["curl","jq"]}}}
@@ -11,7 +11,7 @@ metadata: {"nanobot":{"emoji":"🔍","requires":{"bins":["curl","jq"]}}}
 
 # OSINT Intelligence Briefing
 
-Act as a senior OSINT analyst. Query 27 intelligence sources directly via their
+Act as a senior OSINT analyst. Query 28 intelligence sources directly via their
 public APIs, cache results, and deliver a leverage-first intelligence briefing.
 
 ## Trigger Phrases
@@ -23,7 +23,7 @@ public APIs, cache results, and deliver a leverage-first intelligence briefing.
 - "latest intelligence"
 - "refresh intel"
 
-## Sources (27 Total)
+## Sources (28 Total)
 
 Sources are queried directly via shell scripts in the `sources/` directory.
 Each script returns structured JSON to stdout.
@@ -65,9 +65,11 @@ Each script returns structured JSON to stdout.
 | 26 | Telegram | `telegram.sh` | Social OSINT |
 | 27 | KiwiSDR | `kiwisdr.sh` | HF radio |
 
+| 28 | NASA Missions | `nasa.sh` | Space / Human Spaceflight |
+
 ### Patents (bonus)
 
-| 28 | USPTO Patents | `patents.sh` | Tech patents |
+| 29 | USPTO Patents | `patents.sh` | Tech patents |
 
 ## API Keys (Environment Variables)
 
@@ -140,6 +142,9 @@ When producing a brief, synthesize ALL available source data into this structure
    - Macro weakness + market stress
    - Sanctions + logistics anomalies
    - Weather + supply chain
+   - Space: merge NASA mission status (nasa.sh) with CelesTrak orbital data (space.sh) into
+     a unified SPACE MISSIONS section — active crewed missions, upcoming launches, notable
+     satellite activity
 
 5. HISTORICAL PARALLELS
    What current situation rhymes with. What matched, what differs,
