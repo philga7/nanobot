@@ -1,0 +1,14 @@
+# Optional override for WrenPro instance (DoD laptop, local-only).
+# Usage: docker compose -f docker-compose.wrenpro.yml up -d
+# Runs SearXNG locally for WrenPro; the nanobot gateway runs natively on the host.
+# Ollama runs natively on the host (not containerized).
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng_wrenpro
+    ports:
+      - "8084:8080"
+    volumes:
+      - ~/.wrenpro/searxng:/etc/searxng
+    restart: unless-stopped

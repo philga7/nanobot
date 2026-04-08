@@ -3,28 +3,55 @@
     "defaults": {
       "instanceName": "WrenPro",
       "workspace": "~/.wrenpro/workspace",
-      "model": "anthropic/claude-sonnet-4",
-      "provider": "auto",
+      "model": "gemma4:27b",
+      "provider": "ollama",
       "maxTokens": 8192,
-      "contextWindowTokens": 65536,
+      "contextWindowTokens": 32768,
       "temperature": 0.1,
-      "maxToolIterations": 40
+      "maxToolIterations": 40,
+      "timezone": "America/New_York",
+      "dream": {
+        "intervalH": 4,
+        "modelOverride": "gemma4:4b",
+        "maxBatchSize": 15
+      }
+    }
+  },
+  "providers": {
+    "ollama": {
+      "apiBase": "http://localhost:11434/v1"
     }
   },
   "tools": {
     "web": {
       "search": {
-        "backend": "searxng",
-        "searxngUrl": "http://localhost:8080",
+        "provider": "searxng",
+        "baseUrl": "http://localhost:8084",
         "maxResults": 5
       }
     },
+    "exec": {
+      "enable": true,
+      "timeout": 60
+    },
+    "restrictToWorkspace": true,
     "mcpServers": {
       "todo": {
         "command": "npx",
         "args": ["-y", "todo-mcp-server"],
         "type": "stdio",
-        "env": { "TODO_DB_PATH": "/absolute/path/to/wrenpro/todos.db" },
+        "env": {
+          "TODO_DB_PATH": "/absolute/path/to/wrenpro/todos.db"
+        },
+        "toolTimeout": 30
+      },
+      "obsidian": {
+        "command": "npx",
+        "args": ["-y", "mcp-obsidian"],
+        "type": "stdio",
+        "env": {
+          "OBSIDIAN_VAULT_PATH": "/absolute/path/to/obsidian/vault"
+        },
         "toolTimeout": 30
       }
     }
