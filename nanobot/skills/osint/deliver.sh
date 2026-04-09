@@ -47,16 +47,37 @@ brief_json="$(bash "$BRIEF_SCRIPT" $([[ "$FORCE" == "true" ]] && echo "--force")
 
 # Normalize nested intel RSS/Twitter shapes (feeds.*.items / accounts.*.items) to flat
 # arrays so downstream jq matches brief.sh output from both layouts.
+# Twitter: unwrap bird-api JSON blobs in .text (cache should ideally parse in
+# ~/.wrenvps/intel/sources/fetch-twitter.sh; we harden here too).
 if normalized="$(
   echo "$brief_json" | jq -c '
+    def strip_first_line_handle(text):
+      (text | split("\n")) as $ln
+      | if ($ln | length) == 0 then text
+        else
+          (($ln[0] | gsub("^[[:space:]]*@[A-Za-z0-9_]+[[:space:]]*\\([^)]*\\):[[:space:]]*"; "")) as $f
+          | ([$f] + $ln[1:])
+          | join("\n"))
+        end;
+    def unwrap_bird_api(raw):
+      (raw | tostring) as $r
+      | if ($r | test("^\\s*\\{")) then
+          (try (($r | fromjson | .output // .text // "") | tostring) catch $r)
+        else $r end;
     def clean_tweet(text):
-      ((text // "") | tostring
+      strip_first_line_handle(
+        (unwrap_bird_api(text)
+        | tostring
         | split("\n")
-        | map(select((test("^date:|^url:|^PHOTO:|^VIDEO:|^QT @|^RT @")) | not))
+        | map(select(
+            (test("^date:|^url:|^PHOTO:|^VIDEO:|^RT @|^>") | not)
+            and (test("QT @") | not)
+          ))
         | join("\n")
-        | gsub("\\s*https?://\\S+"; "")
-        | gsub("^\\s+"; "")
-        | gsub("\\s+$"; ""));
+        | gsub("\\s*https?://\\S+"; ""))
+      )
+      | gsub("^\\s+"; "")
+      | gsub("\\s+$"; "");
     .rss = [
       (.rss // [])[]
       | if (type == "object") and has("feeds") and (.feeds | type == "object") then
@@ -162,7 +183,19 @@ if (( rss_items > 0 )); then
         })
       | map(select((._text | tostring | test("^\\s*$") | not)))
       | sort_by(. as $row | [-(score($row._text)), ($row._ts | . as $t | -((if $t == "" then 0 else (try ($t | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch 0) end)))])
-      | .[:10]
+      | reduce .[] as $row (
+          {items: [], used: {}};
+          . as $acc
+          | ($acc.used[$row._src] // 0) as $n
+          | if ($acc.items | length) >= 10 then $acc
+            elif $n >= 2 then $acc
+            else {
+                items: ($acc.items + [$row]),
+                used: ($acc.used | .[$row._src] = ($n + 1))
+              }
+            end
+        )
+      | .items
       | map(. as $row | "• [" + $row._src + "]" + tier($row._src) + " " + $row._text)
       | .[]
     ' 2>/dev/null || true
@@ -179,14 +212,33 @@ if (( twitter_items > 0 )); then
       --argjson alternative "$tier_alternative_inline" \
       --argjson fringe "$tier_fringe_inline" \
     '
+      def strip_first_line_handle(text):
+        (text | split("\n")) as $ln
+        | if ($ln | length) == 0 then text
+          else
+            (($ln[0] | gsub("^[[:space:]]*@[A-Za-z0-9_]+[[:space:]]*\\([^)]*\\):[[:space:]]*"; "")) as $f
+            | ([$f] + $ln[1:])
+            | join("\n"))
+          end;
+      def unwrap_bird_api(raw):
+        (raw | tostring) as $r
+        | if ($r | test("^\\s*\\{")) then
+            (try (($r | fromjson | .output // .text // "") | tostring) catch $r)
+          else $r end;
       def clean_tweet(text):
-        ((text // "") | tostring
+        strip_first_line_handle(
+          (unwrap_bird_api(text)
+          | tostring
           | split("\n")
-          | map(select((test("^date:|^url:|^PHOTO:|^VIDEO:|^QT @|^RT @")) | not))
+          | map(select(
+              (test("^date:|^url:|^PHOTO:|^VIDEO:|^RT @|^>") | not)
+              and (test("QT @") | not)
+            ))
           | join("\n")
-          | gsub("\\s*https?://\\S+"; "")
-          | gsub("^\\s+"; "")
-          | gsub("\\s+$"; ""));
+          | gsub("\\s*https?://\\S+"; ""))
+        )
+        | gsub("^\\s+"; "")
+        | gsub("\\s+$"; "");
       def score(text):
         ($weights | to_entries
           | map(. as $e | select((text | tostring | ascii_downcase) | test($e.key | ascii_downcase)) | $e.value)
