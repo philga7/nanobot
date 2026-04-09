@@ -87,7 +87,7 @@ for h in "${HANDLES[@]}"; do
   enc="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$h")"
   url="${BIRD_API_URL%/}/timeline?handle=${enc}&limit=20"
 
-  tmp_raw="$(mktemp)"
+  tmp_raw="$(mktemp "${TMPDIR:-/tmp}/bird_raw.XXXXXX")"
   if ! curl -fsS --max-time 60 "$url" >"$tmp_raw" 2>/dev/null; then
     rm -f "$tmp_raw"
     jq -nc --arg h "@${h}" --arg fts "$ts" \
@@ -105,26 +105,41 @@ import sys
 def main() -> None:
     path, handle, fts = sys.argv[1], sys.argv[2].lstrip("@"), sys.argv[3]
     raw = pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
-    text_body = ""
-    try:
-        data = json.loads(raw)
-        if isinstance(data, dict):
-            text_body = str(data.get("output") or data.get("text") or "")
-        else:
-            text_body = str(data)
-    except json.JSONDecodeError:
-        text_body = raw
+    # Bird-api /timeline returns JSON {"ok":true,"output":" @Handle (Name): ...\\n─\\n..."}.
+    # Extract .output before splitting so we never treat the JSON wrapper as a tweet.
+    if raw.strip().startswith("{"):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                raw = str(parsed.get("output") or parsed.get("text") or raw)
+        except json.JSONDecodeError:
+            pass
+    text_body = raw
+
+    # Strip leading @DisplayName (Display Name): from each tweet body (handle is stored separately).
+    _strip_lead = re.compile(r"^\s*@[\w]+\s*\([^)]*\):\s*")
 
     items: list[dict] = []
-    parts = re.split(r"(?=^\s*@[A-Za-z0-9_]{1,30}\s+\()", text_body, flags=re.MULTILINE)
+    # Primary: bird separates tweets with a horizontal rule line (U+2500 ─).
+    em_dash = "\u2500"
+    if em_dash in text_body:
+        parts = re.split(r"(?:\r?\n)\s*\u2500+\s*(?:\r?\n|$)", text_body)
+    else:
+        # Fallback: split where a new tweet starts (@handle (name):).
+        parts = re.split(r"(?=^\s*@[A-Za-z0-9_]{1,30}\s+\()", text_body, flags=re.MULTILINE)
+
     for part in parts:
-        part = part.strip()
-        if not part:
+        text = part.strip()
+        if not text:
             continue
-        items.append({"handle": handle, "text": part})
+        text = _strip_lead.sub("", text, count=1)
+        if text:
+            items.append({"handle": handle, "text": text})
 
     if not items and text_body.strip():
-        items.append({"handle": handle, "text": text_body.strip()})
+        text = _strip_lead.sub("", text_body.strip(), count=1)
+        if text:
+            items.append({"handle": handle, "text": text})
 
     acct = {
         "handle": f"@{handle}",
