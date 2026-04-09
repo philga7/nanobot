@@ -85,6 +85,23 @@ Each script returns structured JSON to stdout.
 
 Sources without keys degrade gracefully (free-tier or no-auth endpoints).
 
+### ACLED status note
+
+If ACLED returns Cloudflare `530` / error `1016`, treat ACLED as degraded and
+continue the briefing without ACLED event content. This is an upstream DNS/origin
+issue on the ACLED side, not a client-side parsing failure.
+
+### WrenVPS env setup
+
+Add these to your local `.env.wrenvps` (not committed):
+
+```bash
+OSINT_ACLED_EMAIL=your-acled-email@example.com
+OSINT_ACLED_PASSWORD=your-acled-api-key
+```
+
+ACLED registration: <https://acleddata.com/acess-api/>
+
 ## Cache Strategy
 
 **Rule:** No source queried more than once every 15 minutes.
@@ -115,6 +132,45 @@ To refresh all caches without producing a brief:
 ```bash
 bash /path/to/skills/osint/refresh-all.sh
 ```
+
+## Automated Delivery (Slack + ntfy)
+
+Use `deliver.sh` to post a briefing summary to Slack and ntfy:
+
+```bash
+bash /path/to/skills/osint/deliver.sh --force
+```
+
+Supported flags:
+
+- `--dry-run` prints the outgoing message without posting
+- `--template intelSignal|breakingBullet` chooses briefing style
+- `--channel-id C0AGWCQ1ZDE` overrides Slack target channel id
+
+Expected env vars:
+
+- `NANOBOT_CHANNELS__SLACK__BOT_TOKEN`
+- `OSINT_BRIEFING_SLACK_CHANNEL_ID` (default `C0AGWCQ1ZDE`)
+- `OSINT_BRIEFING_TEMPLATE` (default `intelSignal`)
+- `NTFY_URL`, `NTFY_TOPIC`, optional `NTFY_TOKEN`
+
+## Cron Setup (Full Ops)
+
+Install twice-daily OSINT delivery jobs into workspace cron store:
+
+```bash
+# preview only
+python /path/to/skills/osint/install_cron.py
+
+# apply to workspace cron/jobs.json
+python /path/to/skills/osint/install_cron.py --apply
+```
+
+Environment overrides:
+
+- `OSINT_BRIEFING_CRON_MORNING` (default `0 7 * * *`)
+- `OSINT_BRIEFING_CRON_EVENING` (default `0 18 * * *`)
+- `NANOBOT_AGENTS__DEFAULTS__WORKSPACE` (default `~/.wrenvps/workspace`)
 
 ## 8-Section Briefing Framework
 
@@ -173,6 +229,20 @@ When producing a brief, synthesize ALL available source data into this structure
 - Urgency tags: BREAKING, ELEVATED, ROUTINE
 - Target ~800 words (Telegram-friendly length)
 - Always state the briefing timestamp (UTC)
+
+## Delivery Configuration (Ops Mode)
+
+When automated delivery is enabled, OSINT briefing output should route through
+the same Slack + ntfy delivery pattern used by the newsroom pipeline.
+
+Reference config: `delivery.example.json`
+
+- Slack target channel: `#intel-signals` (`C0AGWCQ1ZDE`)
+- Cadence (ET): `0 7 * * *` and `0 18 * * *`
+- Template style: `intelSignal` (default) or `breakingBullet` for urgent updates
+- Secondary channel: ntfy (best-effort)
+
+Create cron jobs only when full ops is ready.
 
 ## Testing
 

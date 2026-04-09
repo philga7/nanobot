@@ -19,6 +19,7 @@ services:
       - ~/.wrenvps/searxng:/etc/searxng
 
   bird-api:
+    restart: unless-stopped
     build:
       context: ./services/bird-api
     env_file:

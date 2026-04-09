@@ -23,7 +23,7 @@ EMAIL="${OSINT_ACLED_EMAIL:-}"
 PASSWORD="${OSINT_ACLED_PASSWORD:-}"
 
 if [[ -z "$EMAIL" || -z "$PASSWORD" ]]; then
-  result="{\"source\":\"${SOURCE}\",\"error\":\"OSINT_ACLED_EMAIL or OSINT_ACLED_PASSWORD not set\",\"fetched_at\":\"${ts}\"}"
+  result="{\"source\":\"${SOURCE}\",\"status\":\"degraded\",\"degraded\":true,\"reason\":\"OSINT_ACLED_EMAIL or OSINT_ACLED_PASSWORD not set\",\"count\":0,\"events\":[],\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
 fi
@@ -47,7 +47,20 @@ fi
 
 if [[ "$http_code" != "200" ]]; then
   body=$(head -c 200 /tmp/acled_raw.json 2>/dev/null | tr '"' "'" || echo "")
-  result="{\"source\":\"${SOURCE}\",\"error\":\"HTTP ${http_code}\",\"detail\":\"${body}\",\"fetched_at\":\"${ts}\"}"
+  result=$(jq -nc \
+    --arg ts "$ts" \
+    --arg code "$http_code" \
+    --arg detail "$body" \
+    '{
+      source: "acled",
+      status: "degraded",
+      degraded: true,
+      reason: ("ACLED endpoint unavailable (HTTP " + $code + ")"),
+      detail: $detail,
+      count: 0,
+      events: [],
+      fetched_at: $ts
+    }')
   echo "$result" | tee "$CACHE_FILE"
   rm -f /tmp/acled_raw.json
   exit 0

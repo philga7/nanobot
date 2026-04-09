@@ -1,0 +1,30 @@
+{
+  "delivery": {
+    "enabled": false,
+    "timezone": "America/New_York",
+    "targets": {
+      "slack": {
+        "enabled": true,
+        "channel_name": "#intel-signals",
+        "channel_id": "C0AGWCQ1ZDE"
+      },
+      "ntfy": {
+        "enabled": true
+      }
+    },
+    "cadence": [
+      {
+        "name": "morning-brief",
+        "cron": "0 7 * * *"
+      },
+      {
+        "name": "evening-brief",
+        "cron": "0 18 * * *"
+      }
+    ],
+    "format": {
+      "template": "intelSignal",
+      "fallback_template": "breakingBullet"
+    }
+  }
+}
