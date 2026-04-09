@@ -21,10 +21,10 @@ fi
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 rates=$(curl -sf --max-time 10 \
-  "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/avg_interest_rates?sort=-record_date&page[size]=10" 2>/dev/null) || rates="{}"
+  "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/avg_interest_rates?sort=-record_date&page%5Bsize%5D=10" 2>/dev/null) || rates="{}"
 
 debt=$(curl -sf --max-time 10 \
-  "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/debt_to_penny?sort=-record_date&page[size]=5" 2>/dev/null) || debt="{}"
+  "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/debt_to_penny?sort=-record_date&page%5Bsize%5D=5" 2>/dev/null) || debt="{}"
 
 rates_data=$(echo "$rates" | jq -c '[(.data // [])[:10][] | {record_date, security_desc, avg_interest_rate_amt}]' 2>/dev/null) || rates_data="[]"
 debt_data=$(echo "$debt" | jq -c '[(.data // [])[:5][] | {record_date, tot_pub_debt_out_amt, intragov_hold_amt}]' 2>/dev/null) || debt_data="[]"
