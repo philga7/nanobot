@@ -560,6 +560,7 @@ def test_openai_compat_sanitizes_tool_call_arguments_for_strict_providers() -> N
         provider = OpenAICompatProvider()
 
     sanitized = provider._sanitize_messages([
+        {"role": "user", "content": "hi"},
         {
             "role": "assistant",
             "content": None,
@@ -580,10 +581,12 @@ def test_openai_compat_sanitizes_tool_call_arguments_for_strict_providers() -> N
                     "function": {"name": "bad_json", "arguments": "{oops"},
                 },
             ],
-        }
+        },
+        # Trailing non-assistant so role-alternation does not drop the tool-call turn.
+        {"role": "user", "content": "tool results follow"},
     ])
 
-    tcs = sanitized[0]["tool_calls"]
+    tcs = sanitized[1]["tool_calls"]
     assert tcs[0]["function"]["arguments"] == '{"path": "a.txt"}'
     assert tcs[1]["function"]["arguments"] == "{}"
     assert tcs[2]["function"]["arguments"] == "{}"

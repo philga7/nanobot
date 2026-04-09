@@ -41,9 +41,16 @@ def test_add_job_shell_exec_strips_delivery_fields(tmp_path) -> None:
     assert job.payload.channel is None
     assert job.payload.to is None
 
-    raw = json.loads(store_path.read_text())
-    p = raw["jobs"][0]["payload"]
-    assert p == {"kind": "shell_exec", "message": "bash /tmp/x.sh", "deliver": False}
+    # When the service is not running, adds are appended to action.jsonl (merged on load).
+    action_path = tmp_path / "cron" / "action.jsonl"
+    line = json.loads(action_path.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert line["action"] == "add"
+    p = line["params"]["payload"]
+    assert {k: v for k, v in p.items() if v is not None} == {
+        "kind": "shell_exec",
+        "message": "bash /tmp/x.sh",
+        "deliver": False,
+    }
 
 
 @pytest.mark.asyncio
