@@ -1,18 +1,21 @@
 ---
 name: osint
 description: >-
-  OSINT intelligence briefing. Queries 28 open-source intelligence APIs
+  OSINT intelligence briefing. Queries 29 open-source intelligence APIs
   (GDELT, FRED, FIRMS, EIA, BLS, CISA, markets, sanctions, conflict, weather,
-  maritime, social, NASA missions), caches results for 15 minutes, and synthesizes a
-  leverage-first 8-section briefing. Trigger with "brief me", "intel brief",
-  "osint brief", "what's going on", "latest intelligence", or "refresh intel".
+  maritime, social, NASA missions) plus RSS feeds and Twitter/X signals from the
+  intel pipeline, caches results for 15 minutes, and synthesizes a
+  leverage-first 9-section briefing with cross-source correlation and narrative
+  tracking. Trigger with "brief me", "intel brief", "osint brief", "what's
+  going on", "latest intelligence", or "refresh intel".
 metadata: {"nanobot":{"emoji":"🔍","requires":{"bins":["curl","jq"]}}}
 ---
 
 # OSINT Intelligence Briefing
 
-Act as a senior OSINT analyst. Query 28 intelligence sources directly via their
-public APIs, cache results, and deliver a leverage-first intelligence briefing.
+Act as a senior OSINT analyst. Query intelligence sources across three layers
+(API, RSS, Twitter/X), cache results, and deliver a leverage-first intelligence
+briefing with topic-weighted story prioritization.
 
 ## Trigger Phrases
 
@@ -23,7 +26,36 @@ public APIs, cache results, and deliver a leverage-first intelligence briefing.
 - "latest intelligence"
 - "refresh intel"
 
-## Sources (28 Total)
+## Three-Layer Architecture
+
+The briefing pulls from three parallel data layers:
+
+| Layer | Source | Config |
+|-------|--------|--------|
+| **API** | 29 scripts in `sources/` | API keys in `~/.wrenvps/osint/.env` |
+| **RSS** | 20+ RSS feeds (SCOTUSblog, Times of Israel, CSIS, Brookings, Defense One, War on the Rocks, AJC, GPB, etc.) | `~/.wrenvps/intel/config/sources.json` |
+| **Twitter/X** | 11 accounts via bird-api (Mario Nawfal, Chad Pergram, RawsAlerts, Mossad_il, Leading Report, etc.) | `~/.wrenvps/intel/config/sources.json` |
+
+Layer orchestration:
+- `brief.sh` calls `~/.wrenvps/intel/sources/fetch-all.sh` (or individual `fetch-rss.sh` / `fetch-twitter.sh`) before synthesis
+- RSS cache: `~/.wrenvps/intel/cache/rss/`
+- Twitter cache: `~/.wrenvps/intel/cache/twitter/`
+- If bird-api is down, Twitter layer returns empty and briefing continues
+- If RSS feeds fail, available feeds are used; briefing is never blocked
+
+## Topic Weighting
+
+Priority topics are read from `~/.wrenvps/intel/config/topics.json`:
+
+- Items matching high-weight topics (Iran 1.5, Israel 1.5, ICE 1.3, Tariffs 1.3, DOGE 1.2, etc.) surface higher in sections 1-3
+- Items matching `major_event_keywords` get `:rotating_light: BREAKING` urgency tags
+- Items are labeled with tier from `source_tier_classification`: **mainstream**, **alternative**, or **fringe**
+
+## Georgia Desk
+
+When RSS items contain Georgia-relevant content (AJC, GPB, keywords: Georgia, Atlanta, Kemp, Warnock), a **GEORGIA DESK** subsection is included in the briefing.
+
+## Sources (29 Total — API Layer)
 
 Sources are queried directly via shell scripts in the `sources/` directory.
 Each script returns structured JSON to stdout.
@@ -106,9 +138,12 @@ ACLED registration: <https://acleddata.com/acess-api/>
 
 **Rule:** No source queried more than once every 15 minutes.
 
-- Cache dir: `{skill_dir}/cache/`
-- Each source cached as `{source}.json`
-- Check file mtime before fetching
+| Layer | Cache dir |
+|-------|-----------|
+| API | `{skill_dir}/cache/` — each source as `{source}.json` |
+| RSS | `~/.wrenvps/intel/cache/rss/` — managed by fetch-rss.sh |
+| Twitter | `~/.wrenvps/intel/cache/twitter/` — managed by fetch-twitter.sh |
+
 - Store `fetched_at` ISO timestamp in each cached file
 - If `now - fetched_at < 15 min`, use cache
 - `--force` flag on any source script bypasses cache
@@ -172,32 +207,82 @@ Environment overrides:
 - `OSINT_BRIEFING_CRON_EVENING` (default `0 18 * * *`)
 - `NANOBOT_AGENTS__DEFAULTS__WORKSPACE` (default `~/.wrenvps/workspace`)
 
-## 8-Section Briefing Framework
+## Unified Intel Pipeline
 
-When producing a brief, synthesize ALL available source data into this structure:
+Sourcing is handled by `~/.wrenvps/intel/sources/` — a separate sourcing layer
+that fetches API, RSS, and Twitter data into `~/.wrenvps/intel/cache/`.
+
+When synthesizing a brief, read cached data from:
+- `~/.wrenvps/intel/cache/api/` — API source data (GDELT, FRED, CISA, etc.)
+- `~/.wrenvps/intel/cache/rss/` — RSS feed data (CSIS, Brookings, Defense One, etc.)
+- `~/.wrenvps/intel/cache/twitter/` — Twitter data (Mario Nawfal, Chad Pergram, etc.)
+- `~/.wrenvps/intel/cache/_all.json` — Combined output from fetch-all.sh
+
+Priority topics and weights: `~/.wrenvps/intel/config/topics.json`
+Source registry: `~/.wrenvps/intel/config/sources.json`
+
+To refresh all sources before briefing: `bash ~/.wrenvps/intel/sources/fetch-all.sh`
+To refresh a single layer: `bash ~/.wrenvps/intel/sources/fetch-rss.sh` (etc.)
+
+## Source Tier Classification
+
+```
+Mainstream: Reuters, AP, BBC, CNN, NYT, WSJ, WaPo, Guardian, ABC, NBC, CBS, Fox News, Chad Pergram
+Alternative: Substack, Rumble, BitChute, Telegram channels, Gab, Gettr, Truth Social, Mario Nawfal, RawsAlerts, Leading Report
+Fringe: ZeroHedge, Infowars, NaturalNews, Gateway Pundit, Breitbart, Epoch Times, Revolver, Daily Caller, Citizen Free Press
+```
+
+## Correlation Topics Watch List
+
+Reference list for Section 9 (agent should identify emerging topics beyond this list):
+
+```
+Economy: tariffs, Fed rates, inflation, housing, supply chain, layoffs
+Geopolitics: China-Taiwan, Russia-Ukraine, Israel-Gaza, Iran
+Finance: crypto regulation, banking stress
+Politics: elections, immigration
+Tech: AI regulation, deepfakes, antitrust
+Security: nuclear threats, cyber incidents
+Health: pandemics, outbreaks
+Environment: climate events, extreme weather
+```
+
+## 9-Section Briefing Framework
+
+When producing a brief, synthesize ALL available source data (API + RSS + Twitter) into this structure.
+
+**Topic weighting rule:** Items from RSS/Twitter matching high-weight topics in `topic_weights`
+(Iran ≥1.5, Israel ≥1.5, ICE ≥1.3, Tariffs ≥1.3, DOGE ≥1.2, etc.) must surface in sections
+1-3 before lower-weight items. Items matching `major_event_keywords` get `BREAKING` urgency tags.
+Label RSS/Twitter items with their tier (mainstream / alternative / fringe) where known.
 
 ```
 1. LEVERAGEABLE IDEAS
    3-5 specific, actionable opportunities. Each must include:
    - Thesis and instrument/sector
-   - Why now (catalyst)
+   - Why now (catalyst) — cite RSS/Twitter signals where relevant
    - Time horizon
    - Invalidation condition
    - Confidence: High / Medium / Low
+   Priority: items matching high-weight topics go first.
 
 2. EXECUTIVE THESIS
    1-3 most important things happening right now. Strong view, not hedged.
+   Draw on RSS headlines and Twitter signals alongside API data.
 
 3. SITUATION AWARENESS
    Top 3-5 developments. What happened, who is involved, why it matters,
    what changes.
+   Include BREAKING-tagged items first if any matched major_event_keywords.
+   Note any individual dominating the current news cycle (3+ stories).
 
 4. PATTERN RECOGNITION
-   Cross-source correlations:
+   Cross-source correlations across all three layers:
    - Conflict + energy + inflation
    - Macro weakness + market stress
    - Sanctions + logistics anomalies
    - Weather + supply chain
+   - RSS/Twitter signal convergence on same event = elevated confidence
    - Space: merge NASA mission status (nasa.sh) with CelesTrak orbital data (space.sh) into
      a unified SPACE MISSIONS section — active crewed missions, upcoming launches, notable
      satellite activity
@@ -219,6 +304,26 @@ When producing a brief, synthesize ALL available source data into this structure
 8. SOURCE INTEGRITY
    Data quality assessment, gaps in coverage, what relies on soft signals
    vs. hard data, any sources that failed or returned stale data.
+   Note which layers were available (API / RSS / Twitter) and any degraded feeds.
+
+9. CROSS-SOURCE CORRELATION
+   Stories appearing across multiple independent sources:
+   - Same event reported by 3+ sources → high confidence signal
+   - Escalation pattern (new details, broader impact) vs. rehash
+   - Source divergence (different framing = narrative split)
+   - Fringe-to-mainstream crossover (story originating from alternative
+     sources now appearing in mainstream outlets)
+   - For each correlation: sources involved, what's converging, what differs
+
+   Narrative tracking (within correlation section):
+   - Fringe-to-mainstream crossover: flag stories crossing source boundaries
+   - Narrative divergence: same event, different framing across source types
+   - Disinfo amplification: known disinfo narratives gaining traction
+   - Source classification reference: fringe / alternative / mainstream
+
+GEORGIA DESK (append when Georgia-relevant content found)
+   Items from AJC, GPB, or matching Georgia/Atlanta/Kemp/Warnock keywords.
+   Sourced from RSS layer; include headline, source, and tier label.
 ```
 
 ## Output Format
