@@ -3,7 +3,8 @@ name: osint
 description: >-
   OSINT intelligence briefing. Queries 28 open-source intelligence APIs
   (GDELT, FRED, FIRMS, EIA, BLS, CISA, markets, sanctions, conflict, weather,
-  maritime, social, NASA missions), caches results for 15 minutes, and synthesizes a
+  maritime, social, NASA missions) plus RSS feeds and Twitter/X signals from the
+  intel pipeline, caches results for 15 minutes, and synthesizes a
   leverage-first 8-section briefing. Trigger with "brief me", "intel brief",
   "osint brief", "what's going on", "latest intelligence", or "refresh intel".
 metadata: {"nanobot":{"emoji":"🔍","requires":{"bins":["curl","jq"]}}}
@@ -11,8 +12,9 @@ metadata: {"nanobot":{"emoji":"🔍","requires":{"bins":["curl","jq"]}}}
 
 # OSINT Intelligence Briefing
 
-Act as a senior OSINT analyst. Query 28 intelligence sources directly via their
-public APIs, cache results, and deliver a leverage-first intelligence briefing.
+Act as a senior OSINT analyst. Query intelligence sources across three layers
+(API, RSS, Twitter/X), cache results, and deliver a leverage-first intelligence
+briefing with topic-weighted story prioritization.
 
 ## Trigger Phrases
 
@@ -23,7 +25,36 @@ public APIs, cache results, and deliver a leverage-first intelligence briefing.
 - "latest intelligence"
 - "refresh intel"
 
-## Sources (28 Total)
+## Three-Layer Architecture
+
+The briefing pulls from three parallel data layers:
+
+| Layer | Source | Config |
+|-------|--------|--------|
+| **API** | 29 scripts in `sources/` | API keys in `~/.wrenvps/osint/.env` |
+| **RSS** | 20+ RSS feeds (SCOTUSblog, Times of Israel, CSIS, Brookings, Defense One, War on the Rocks, AJC, GPB, etc.) | `~/.wrenvps/intel/config/sources.json` |
+| **Twitter/X** | 11 accounts via bird-api (Mario Nawfal, Chad Pergram, RawsAlerts, Mossad_il, Leading Report, etc.) | `~/.wrenvps/intel/config/sources.json` |
+
+Layer orchestration:
+- `brief.sh` calls `~/.wrenvps/intel/sources/fetch-all.sh` (or individual `fetch-rss.sh` / `fetch-twitter.sh`) before synthesis
+- RSS cache: `~/.wrenvps/intel/cache/rss/`
+- Twitter cache: `~/.wrenvps/intel/cache/twitter/`
+- If bird-api is down, Twitter layer returns empty and briefing continues
+- If RSS feeds fail, available feeds are used; briefing is never blocked
+
+## Topic Weighting
+
+Priority topics are read from `~/.wrenvps/intel/config/topics.json`:
+
+- Items matching high-weight topics (Iran 1.5, Israel 1.5, ICE 1.3, Tariffs 1.3, DOGE 1.2, etc.) surface higher in sections 1-3
+- Items matching `major_event_keywords` get `:rotating_light: BREAKING` urgency tags
+- Items are labeled with tier from `source_tier_classification`: **mainstream**, **alternative**, or **fringe**
+
+## Georgia Desk
+
+When RSS items contain Georgia-relevant content (AJC, GPB, keywords: Georgia, Atlanta, Kemp, Warnock), a **GEORGIA DESK** subsection is included in the briefing.
+
+## Sources (29 Total — API Layer)
 
 Sources are queried directly via shell scripts in the `sources/` directory.
 Each script returns structured JSON to stdout.
@@ -106,9 +137,12 @@ ACLED registration: <https://acleddata.com/acess-api/>
 
 **Rule:** No source queried more than once every 15 minutes.
 
-- Cache dir: `{skill_dir}/cache/`
-- Each source cached as `{source}.json`
-- Check file mtime before fetching
+| Layer | Cache dir |
+|-------|-----------|
+| API | `{skill_dir}/cache/` — each source as `{source}.json` |
+| RSS | `~/.wrenvps/intel/cache/rss/` — managed by fetch-rss.sh |
+| Twitter | `~/.wrenvps/intel/cache/twitter/` — managed by fetch-twitter.sh |
+
 - Store `fetched_at` ISO timestamp in each cached file
 - If `now - fetched_at < 15 min`, use cache
 - `--force` flag on any source script bypasses cache
@@ -174,30 +208,39 @@ Environment overrides:
 
 ## 8-Section Briefing Framework
 
-When producing a brief, synthesize ALL available source data into this structure:
+When producing a brief, synthesize ALL available source data (API + RSS + Twitter) into this structure.
+
+**Topic weighting rule:** Items from RSS/Twitter matching high-weight topics in `topic_weights`
+(Iran ≥1.5, Israel ≥1.5, ICE ≥1.3, Tariffs ≥1.3, DOGE ≥1.2, etc.) must surface in sections
+1-3 before lower-weight items. Items matching `major_event_keywords` get `BREAKING` urgency tags.
+Label RSS/Twitter items with their tier (mainstream / alternative / fringe) where known.
 
 ```
 1. LEVERAGEABLE IDEAS
    3-5 specific, actionable opportunities. Each must include:
    - Thesis and instrument/sector
-   - Why now (catalyst)
+   - Why now (catalyst) — cite RSS/Twitter signals where relevant
    - Time horizon
    - Invalidation condition
    - Confidence: High / Medium / Low
+   Priority: items matching high-weight topics go first.
 
 2. EXECUTIVE THESIS
    1-3 most important things happening right now. Strong view, not hedged.
+   Draw on RSS headlines and Twitter signals alongside API data.
 
 3. SITUATION AWARENESS
    Top 3-5 developments. What happened, who is involved, why it matters,
    what changes.
+   Include BREAKING-tagged items first if any matched major_event_keywords.
 
 4. PATTERN RECOGNITION
-   Cross-source correlations:
+   Cross-source correlations across all three layers:
    - Conflict + energy + inflation
    - Macro weakness + market stress
    - Sanctions + logistics anomalies
    - Weather + supply chain
+   - RSS/Twitter signal convergence on same event = elevated confidence
    - Space: merge NASA mission status (nasa.sh) with CelesTrak orbital data (space.sh) into
      a unified SPACE MISSIONS section — active crewed missions, upcoming launches, notable
      satellite activity
@@ -219,6 +262,11 @@ When producing a brief, synthesize ALL available source data into this structure
 8. SOURCE INTEGRITY
    Data quality assessment, gaps in coverage, what relies on soft signals
    vs. hard data, any sources that failed or returned stale data.
+   Note which layers were available (API / RSS / Twitter) and any degraded feeds.
+
+GEORGIA DESK (append when Georgia-relevant content found)
+   Items from AJC, GPB, or matching Georgia/Atlanta/Kemp/Warnock keywords.
+   Sourced from RSS layer; include headline, source, and tier label.
 ```
 
 ## Output Format
