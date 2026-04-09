@@ -136,6 +136,66 @@ The gateway now:
 - Uses cron definitions from `~/.wrenair/cron/`.
 - Can talk either to local Hindsight (via `docker-compose.wrenair.yml`) or to the VPS Hindsight endpoint, and to external SearXNG / ntfy services.
 
+## Native services (Ubuntu WrenPro — DoD laptop)
+
+WrenPro runs entirely local on a DoD work laptop (Ubuntu). All LLM inference goes through **Ollama** (Gemma 4 27b or 4b). Web search uses a local **SearXNG** container. No cloud API keys are needed.
+
+### Prerequisites
+
+- **Ollama** installed natively ([install guide](https://ollama.com/download/linux))
+- **Docker** for containerized SearXNG
+- **Obsidian** installed with a local vault for reference notes
+
+### Setup
+
+1. Pull the Gemma 4 models:
+
+   ```bash
+   ollama pull gemma4:27b
+   ollama pull gemma4:4b
+   ```
+
+2. Create the instance directory and copy config:
+
+   ```bash
+   mkdir -p ~/.wrenpro/{workspace/memory,searxng}
+   cp config.wrenpro.example.json ~/.wrenpro/config.json
+   cp .env.wrenpro.example ~/.env.wrenpro
+   ```
+
+3. Edit `~/.wrenpro/config.json`: set absolute paths for MCP server `TODO_DB_PATH` and `OBSIDIAN_VAULT_PATH`.
+
+4. Start SearXNG:
+
+   ```bash
+   docker compose -f docker-compose.wrenpro.yml up -d
+   ```
+
+5. Create a virtualenv and install nanobot:
+
+   ```bash
+   cd ~/dev/nanobot-wrenpro
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -e ~/workspace/nanobot
+   ```
+
+6. Start the gateway:
+
+   ```bash
+   nanobot gateway --config ~/.wrenpro/config.json
+   ```
+
+7. (Optional) Create a `systemd` user service for auto-start on login — see the WrenVPS section above for the pattern, substituting the WrenPro config path and venv.
+
+### Storage
+
+- **Long-term memory**: `~/.wrenpro/workspace/memory/MEMORY.md` (managed by Dream consolidation)
+- **Obsidian vault**: Accessed via the `obsidian` MCP server for pre-existing notes and references
+- **Core memory files** (`AGENTS.md`, `SOUL.md`, `USER.md`): Edit directly in `~/.wrenpro/workspace/` before first run
+
+---
+
 ## MCP servers (Todo, Library)
 
 Configure MCP servers under `tools.mcpServers` in your config. Use **absolute paths** for database paths so they work regardless of process cwd.

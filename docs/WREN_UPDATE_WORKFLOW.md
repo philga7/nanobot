@@ -1,6 +1,6 @@
-## WrenAir & WrenVPS Update Workflow
+## Wren Update Workflow
 
-This documents how to roll out changes from `~/workspace/nanobot` to both WrenAir (macOS) and WrenVPS (remote VPS).
+This documents how to roll out changes from `~/workspace/nanobot` to WrenAir (macOS), WrenVPS (remote VPS), and WrenPro (DoD laptop).
 
 ---
 
@@ -122,7 +122,64 @@ sudo journalctl -u nanobot-gateway-wrenvps.service --since "1 hour ago"
 
 ---
 
-## 4. Quick reference
+## 4. WrenPro (DoD laptop, Ubuntu, local-only)
+
+WrenPro runs entirely local — Ollama for LLM, SearXNG in Docker for search. No cloud keys or remote hosts involved.
+
+### 4.1 Update code on the DoD laptop
+
+```bash
+cd ~/workspace/nanobot
+git pull origin main
+
+source .venv/bin/activate
+pip install -e .
+```
+
+### 4.2 Update SearXNG container (if image updated)
+
+```bash
+docker compose -f docker-compose.wrenpro.yml pull
+docker compose -f docker-compose.wrenpro.yml up -d
+```
+
+### 4.3 Update Ollama models (if new versions available)
+
+```bash
+ollama pull gemma4:27b
+ollama pull gemma4:4b
+```
+
+### 4.4 Restart WrenPro
+
+If running as a systemd user service:
+
+```bash
+systemctl --user restart nanobot-gateway-wrenpro.service
+systemctl --user status nanobot-gateway-wrenpro.service
+```
+
+If running manually:
+
+```bash
+# Stop the existing process (Ctrl-C or kill), then:
+source ~/dev/nanobot-wrenpro/venv/bin/activate
+nanobot gateway --config ~/.wrenpro/config.json
+```
+
+### 4.5 View WrenPro logs
+
+```bash
+# If systemd user service:
+journalctl --user -u nanobot-gateway-wrenpro.service -f
+
+# Last 200 lines:
+journalctl --user -u nanobot-gateway-wrenpro.service -n 200
+```
+
+---
+
+## 5. Quick reference
 
 - **Local WrenAir (macOS)**
   - Restart: `launchctl kickstart -k gui/$UID/ai.nanobot.gateway.wrenair`
@@ -134,4 +191,13 @@ sudo journalctl -u nanobot-gateway-wrenvps.service --since "1 hour ago"
     - `source .venv/bin/activate && pip install -e .`
   - Restart: `sudo systemctl restart nanobot-gateway-wrenvps.service`
   - Logs (live): `sudo journalctl -u nanobot-gateway-wrenvps.service -f`
+
+- **Local WrenPro (DoD laptop, Ubuntu)**
+  - Update code:
+    - `cd ~/workspace/nanobot && git pull origin main`
+    - `source .venv/bin/activate && pip install -e .`
+  - Update SearXNG: `docker compose -f docker-compose.wrenpro.yml pull && docker compose -f docker-compose.wrenpro.yml up -d`
+  - Update models: `ollama pull gemma4:27b && ollama pull gemma4:4b`
+  - Restart (systemd): `systemctl --user restart nanobot-gateway-wrenpro.service`
+  - Logs (live): `journalctl --user -u nanobot-gateway-wrenpro.service -f`
 
