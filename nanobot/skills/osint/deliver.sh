@@ -49,6 +49,14 @@ brief_json="$(bash "$BRIEF_SCRIPT" $([[ "$FORCE" == "true" ]] && echo "--force")
 # arrays so downstream jq matches brief.sh output from both layouts.
 if normalized="$(
   echo "$brief_json" | jq -c '
+    def clean_tweet(text):
+      ((text // "") | tostring
+        | split("\n")
+        | map(select((test("^date:|^url:|^PHOTO:|^VIDEO:|^QT @|^RT @")) | not))
+        | join("\n")
+        | gsub("\\s*https?://\\S+"; "")
+        | gsub("^\\s+"; "")
+        | gsub("\\s+$"; ""));
     .rss = [
       (.rss // [])[]
       | if (type == "object") and has("feeds") and (.feeds | type == "object") then
@@ -69,14 +77,18 @@ if normalized="$(
       (.twitter // [])[]
       | if (type == "object") and has("accounts") and (.accounts | type == "object") then
           (.accounts | to_entries[] | .value as $acct | ($acct.items // [])[] | . + {
-            handle: (.handle // $acct.handle // "unknown"),
+            handle: ((.handle // $acct.handle // "unknown") | tostring | ltrimstr("@")),
+            text: clean_tweet(.text // .content // ""),
             source: ($acct.source // .source),
             tier: ($acct.tier // .tier),
             category: ($acct.category // .category),
             created_at: (.created_at // $acct.created_at // .date)
           })
         elif type == "object" then
-          .
+          . + {
+            handle: ((.handle // .user // .screen_name // "unknown") | tostring | ltrimstr("@")),
+            text: clean_tweet(.text // .content // "")
+          }
         else
           empty
         end
@@ -148,6 +160,7 @@ if (( rss_items > 0 )); then
           _src:  (.source // .feed // "RSS"),
           _ts:   (.published // .pubDate // .pub_date // .date // .fetched_at // "")
         })
+      | map(select((._text | tostring | test("^\\s*$") | not)))
       | sort_by(. as $row | [-(score($row._text)), ($row._ts | . as $t | -((if $t == "" then 0 else (try ($t | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch 0) end)))])
       | .[:10]
       | map(. as $row | "• [" + $row._src + "]" + tier($row._src) + " " + $row._text)
@@ -166,6 +179,14 @@ if (( twitter_items > 0 )); then
       --argjson alternative "$tier_alternative_inline" \
       --argjson fringe "$tier_fringe_inline" \
     '
+      def clean_tweet(text):
+        ((text // "") | tostring
+          | split("\n")
+          | map(select((test("^date:|^url:|^PHOTO:|^VIDEO:|^QT @|^RT @")) | not))
+          | join("\n")
+          | gsub("\\s*https?://\\S+"; "")
+          | gsub("^\\s+"; "")
+          | gsub("\\s+$"; ""));
       def score(text):
         ($weights | to_entries
           | map(. as $e | select((text | tostring | ascii_downcase) | test($e.key | ascii_downcase)) | $e.value)
@@ -179,10 +200,11 @@ if (( twitter_items > 0 )); then
 
       (.twitter // [])
       | map(. + {
-          _handle: (.handle // .user // .screen_name // "unknown"),
-          _text:   (.text // .content // ""),
+          _handle: ((.handle // .user // .screen_name // "unknown") | tostring | ltrimstr("@")),
+          _text:   clean_tweet(.text // .content // ""),
           _ts:     (.created_at // .date // .fetched_at // "")
         })
+      | map(select((._text | tostring | test("^\\s*$") | not)))
       | sort_by(. as $row | [-(score($row._text)), ($row._ts | . as $t | -((if $t == "" then 0 else (try ($t | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch 0) end)))])
       | .[:10]
       | map(. as $row | "• @" + $row._handle + tier($row._handle) + ": " + $row._text)
@@ -198,8 +220,11 @@ if (( rss_items > 0 )); then
     echo "$brief_json" | jq -r '
       (.rss // [])
       | map(select(
-          (.title // .headline // .text // "" | ascii_downcase | test("georgia|atlanta|ajc|gpb|gop|kemp|warnock"))
-          or (.source // .feed // "" | ascii_downcase | test("ajc|gpb|georgia"))
+          ((.title // .headline // .text // "") | tostring | test("^\\s*$") | not)
+          and (
+            (.title // .headline // .text // "" | ascii_downcase | test("georgia|atlanta|ajc|gpb|gop|kemp|warnock"))
+            or (.source // .feed // "" | ascii_downcase | test("ajc|gpb|georgia"))
+          )
         ))
       | .[:5]
       | map("• [" + (.source // .feed // "RSS") + "] " + (.title // .headline // .text // "(no title)"))
@@ -229,46 +254,22 @@ if [[ -n "$high_weight_topics" && ( (( rss_items > 0 )) || (( twitter_items > 0 
   elevated_items="$(
     echo "$brief_json" | jq -r --arg pattern "$high_weight_topics" '
       def matches(t): t | ascii_downcase | test($pattern);
+      def nonempty(s): ((s // "") | tostring | test("^\\s*$") | not);
       [
         (.rss // [] | map(select(
-          matches(.title // .headline // .text // "")
-          or matches(.source // .feed // "")
+          nonempty(.title // .headline // .text // "")
+          and (matches(.title // .headline // .text // "")
+            or matches(.source // .feed // ""))
         )) | .[:5] | map("• [RSS/" + (.source // .feed // "?") + "] " + (.title // .headline // .text // ""))),
         (.twitter // [] | map(select(
-          matches(.text // .content // "")
-        )) | .[:5] | map("• [TW/@" + (.handle // .user // .screen_name // "?") + "] " + (.text // .content // "")))
+          nonempty(.text // .content // "")
+          and matches(.text // .content // "")
+        )) | .[:5] | map("• [TW/@" + ((.handle // .user // .screen_name // "?") | ltrimstr("@")) + "] " + (.text // .content // "")))
       ]
       | add // []
       | .[]
     ' 2>/dev/null || true
   )"
-fi
-
-# --- Breaking items (matching major_event_keywords) ---
-breaking_items=""
-if [[ -f "$INTEL_TOPICS" ]]; then
-  breaking_keywords="$(
-    jq -r '
-      (.major_event_keywords // [])
-      | map(ascii_downcase)
-      | join("|")
-    ' "$INTEL_TOPICS" 2>/dev/null || true
-  )"
-  if [[ -n "$breaking_keywords" && ( (( rss_items > 0 )) || (( twitter_items > 0 )) ) ]]; then
-    breaking_items="$(
-      echo "$brief_json" | jq -r --arg pattern "$breaking_keywords" '
-        def matches(t): t | ascii_downcase | test($pattern);
-        [
-          (.rss // [] | map(select(matches(.title // .headline // .text // "")))
-            | map("• :rotating_light: BREAKING [RSS/" + (.source // .feed // "?") + "] " + (.title // .headline // .text // ""))),
-          (.twitter // [] | map(select(matches(.text // .content // "")))
-            | map("• :rotating_light: BREAKING [TW/@" + (.handle // .user // .screen_name // "?") + "] " + (.text // .content // "")))
-        ]
-        | add // []
-        | .[]
-      ' 2>/dev/null || true
-    )"
-  fi
 fi
 
 # --- Assemble title ---
@@ -286,13 +287,6 @@ body="${title}
 Time (UTC): ${timestamp}
 Coverage: ${total_sources} API sources | ${rss_items} RSS items | ${twitter_items} tweets (${errors} degraded/error)
 "
-
-if [[ -n "$breaking_items" ]]; then
-  body+="
-:rotating_light: BREAKING SIGNALS
-${breaking_items}
-"
-fi
 
 if [[ -n "$elevated_items" ]]; then
   body+="
