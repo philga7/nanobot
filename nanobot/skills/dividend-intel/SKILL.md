@@ -8,6 +8,8 @@ metadata: {"nanobot":{"emoji":"💰","requires":{"bins":["curl","python3"]},"ins
 
 Tools for dividend portfolio analysis, special dividend detection, and tax-efficient account placement. All commands use `curl` and `python3` with `yfinance` — no API keys required.
 
+Delivery: Automated digests and trade recommendations go to Slack `#investing` (`C0AG5NSKVCL`). Ad-hoc queries go to the requesting channel.
+
 ## Portfolio data (JSON)
 
 All holdings, strategy rules, and market state live in a **single JSON file**.
@@ -984,7 +986,7 @@ When running account_optimizer, load `holdings` from `portfolio.json`, use each 
 
 ## 5. Morning digest cron
 
-Set up a daily 7 AM cron job that sweeps holdings, scans for special dividends, screens for new picks, and delivers a Telegram digest.
+Set up a daily 7 AM cron job that sweeps holdings, scans for special dividends, screens for new picks, and delivers a Slack digest to `#investing` (`C0AG5NSKVCL`).
 
 ```
 Schedule: 0 7 * * * (tz: America/New_York or user's local)
@@ -995,7 +997,7 @@ Task:
 3. Check today's day of week against strategy.buyDay
 4. Run special_dividend_scanner for last 7 days
 5. Run yield_screener with min_yield=3.5, max_payout=75
-6. Compose Telegram digest:
+6. Compose Slack digest for #investing:
 
    EX-DIV THIS WEEK
    [ticker] ([shares] shares) — ex [date], yield [X]%, pays $[forward_annual/4]
@@ -1015,12 +1017,46 @@ Task:
    Buy condition: [strategy.buyCondition] | Buy day: [strategy.buyDay]
    [X] holdings currently below SMA200 — [list tickers]
 
-7. Send digest to Telegram
+7. Send digest to Slack #investing (C0AG5NSKVCL)
 ```
 
 Use the nanobot cron system (`kind: "cron"`, `expr: "0 7 * * *"`, `tz: "America/New_York"`).
 
 **`portfolio_state` is derived data.** The `state` object inside each `holdings` entry (`price`, `sma200`, `above`, `pct_diff`) is refreshed by a separate agent cron that calls yfinance and writes back to `portfolio.json`. It is never hand-edited. If `state` is absent for a ticker, the sweep omits SMA fields gracefully.
+
+---
+
+## 6. Thursday trade recommendation cron
+
+Set up a weekly Thursday 7:30 AM cron job that evaluates holdings and posts one concise trade recommendation to Slack `#investing` (`C0AG5NSKVCL`). The recommendation can be either buy-focused or sell-focused.
+
+```
+Schedule: 30 7 * * 4 (tz: America/New_York or user's local)
+
+Task:
+1. Load portfolio.json — read strategy.buyCondition, strategy.sellCondition, and strategy.buyDay
+2. Run portfolio_sweep for next 45 days (reads holdings from portfolio.json)
+3. Build buy candidates:
+   - holdings with buy_candidate=true (below SMA200) and strategy-aligned setup
+4. Build sell candidates:
+   - holdings matching strategy.sellCondition
+   - include defensive exits such as dividend cut/suspension signals from newsletter_ingest when available
+5. Prioritize one recommendation:
+   - SELL takes precedence when risk/control conditions trigger
+   - otherwise choose the strongest BUY candidate
+6. Compose Slack trade recommendation for #investing:
+
+   TRADE RECOMMENDATION (THURSDAY)
+   Action: [BUY|SELL] [ticker]
+   Thesis: [why now, tied to strategy.buyCondition or strategy.sellCondition]
+   Evidence: yield [X]%, payout [Y]%, ex-div [date], SMA200 status [above/below]
+   Risk control: [invalidates thesis / stop condition]
+   Follow-up: [next review date or trigger]
+
+7. Send recommendation to Slack #investing (C0AG5NSKVCL)
+```
+
+Use the nanobot cron system (`kind: "cron"`, `expr: "30 7 * * 4"`, `tz: "America/New_York"`).
 
 ---
 
@@ -1124,7 +1160,7 @@ Or via the agent (tell the agent):
 
 ---
 
-## 6. newsletter_ingest
+## 7. newsletter_ingest
 
 Poll a Hostinger IMAP inbox for dividend/investing newsletters. Extracts actionable signals and writes them to `~/.wrenvps/dividend-intel/newsletter_signals.json` for consumption by `special_dividend_scanner` and manual review.
 
