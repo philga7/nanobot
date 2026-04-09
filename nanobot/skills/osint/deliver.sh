@@ -44,6 +44,48 @@ if [[ ! -x "$BRIEF_SCRIPT" ]]; then
 fi
 
 brief_json="$(bash "$BRIEF_SCRIPT" $([[ "$FORCE" == "true" ]] && echo "--force"))"
+
+# Normalize nested intel RSS/Twitter shapes (feeds.*.items / accounts.*.items) to flat
+# arrays so downstream jq matches brief.sh output from both layouts.
+if normalized="$(
+  echo "$brief_json" | jq -c '
+    .rss = [
+      (.rss // [])[]
+      | if (type == "object") and has("feeds") and (.feeds | type == "object") then
+          (.feeds | to_entries[] | .value as $feed | ($feed.items // [])[] | . + {
+            source: ($feed.source // .source // "RSS"),
+            tier: ($feed.tier // .tier),
+            category: ($feed.category // .category),
+            feed: ($feed.feed // .feed),
+            published: (.published // .pub_date // .pubDate // .date)
+          })
+        elif type == "object" then
+          .
+        else
+          empty
+        end
+    ]
+    | .twitter = [
+      (.twitter // [])[]
+      | if (type == "object") and has("accounts") and (.accounts | type == "object") then
+          (.accounts | to_entries[] | .value as $acct | ($acct.items // [])[] | . + {
+            handle: (.handle // $acct.handle // "unknown"),
+            source: ($acct.source // .source),
+            tier: ($acct.tier // .tier),
+            category: ($acct.category // .category),
+            created_at: (.created_at // $acct.created_at // .date)
+          })
+        elif type == "object" then
+          .
+        else
+          empty
+        end
+    ]
+  ' 2>/dev/null
+)"; then
+  brief_json="$normalized"
+fi
+
 timestamp="$(echo "$brief_json" | jq -r '.briefing_timestamp // .meta.generated_at // "unknown"')"
 total_sources="$(echo "$brief_json" | jq -r '.meta.total_api_sources // .meta.total_sources // 0')"
 errors="$(echo "$brief_json" | jq -r '.meta.sources_with_errors // 0')"
@@ -90,10 +132,9 @@ if (( rss_items > 0 )); then
       --argjson fringe "$tier_fringe_inline" \
     '
       def score(text):
-        ($weights | to_entries | map(
-          select(text | ascii_downcase | test(.key | ascii_downcase))
-          | .value
-        ) | add // 0);
+        ($weights | to_entries
+          | map(. as $e | select((text | tostring | ascii_downcase) | test($e.key | ascii_downcase)) | $e.value)
+          | add // 0);
 
       def tier(src):
         if ($mainstream | index(src | ascii_downcase)) != null then " (mainstream)"
@@ -105,11 +146,11 @@ if (( rss_items > 0 )); then
       | map(. + {
           _text: (.title // .headline // .text // ""),
           _src:  (.source // .feed // "RSS"),
-          _ts:   (.published // .pubDate // .date // .fetched_at // "")
+          _ts:   (.published // .pubDate // .pub_date // .date // .fetched_at // "")
         })
-      | sort_by([-(score(._text)), (._ts | . as $t | if $t == "" then 0 else ($t | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch 0 | -. end)])
+      | sort_by(. as $row | [-(score($row._text)), ($row._ts | . as $t | -((if $t == "" then 0 else (try ($t | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch 0) end)))])
       | .[:10]
-      | map("• [" + ._src + "]" + tier(._src) + " " + ._text)
+      | map(. as $row | "• [" + $row._src + "]" + tier($row._src) + " " + $row._text)
       | .[]
     ' 2>/dev/null || true
   )"
@@ -126,10 +167,9 @@ if (( twitter_items > 0 )); then
       --argjson fringe "$tier_fringe_inline" \
     '
       def score(text):
-        ($weights | to_entries | map(
-          select(text | ascii_downcase | test(.key | ascii_downcase))
-          | .value
-        ) | add // 0);
+        ($weights | to_entries
+          | map(. as $e | select((text | tostring | ascii_downcase) | test($e.key | ascii_downcase)) | $e.value)
+          | add // 0);
 
       def tier(handle):
         if ($mainstream | index(handle | ascii_downcase)) != null then " (mainstream)"
@@ -143,9 +183,9 @@ if (( twitter_items > 0 )); then
           _text:   (.text // .content // ""),
           _ts:     (.created_at // .date // .fetched_at // "")
         })
-      | sort_by([-(score(._text)), (._ts | . as $t | if $t == "" then 0 else ($t | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch 0 | -. end)])
+      | sort_by(. as $row | [-(score($row._text)), ($row._ts | . as $t | -((if $t == "" then 0 else (try ($t | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch 0) end)))])
       | .[:10]
-      | map("• @" + ._handle + tier(._handle) + ": " + ._text)
+      | map(. as $row | "• @" + $row._handle + tier($row._handle) + ": " + $row._text)
       | .[]
     ' 2>/dev/null || true
   )"
