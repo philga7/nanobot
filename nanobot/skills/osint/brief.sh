@@ -96,21 +96,23 @@ if [[ -d "$INTEL_DIR" ]]; then
 fi
 
 if [[ "$intel_available" == "true" ]]; then
+  intel_force_flag=""
+  [[ "$FLAG" == "--force" ]] && intel_force_flag="--force"
   if [[ -x "$INTEL_FETCH_ALL" ]]; then
     echo "Brief: running intel pipeline fetch-all.sh..." >&2
-    timeout 60 bash "$INTEL_FETCH_ALL" > /dev/null 2>&1 || true
+    timeout 60 bash "$INTEL_FETCH_ALL" $intel_force_flag > /dev/null 2>&1 || true
   elif [[ -x "$INTEL_FETCH_RSS" || -x "$INTEL_FETCH_TWITTER" ]]; then
     # Run individual layers if fetch-all.sh not present
     rss_pid=""
     twitter_pid=""
     if [[ -x "$INTEL_FETCH_RSS" ]]; then
       echo "Brief: running intel pipeline fetch-rss.sh..." >&2
-      timeout 60 bash "$INTEL_FETCH_RSS" > /dev/null 2>&1 || true &
+      timeout 60 bash "$INTEL_FETCH_RSS" $intel_force_flag > /dev/null 2>&1 || true &
       rss_pid=$!
     fi
     if [[ -x "$INTEL_FETCH_TWITTER" ]]; then
       echo "Brief: running intel pipeline fetch-twitter.sh..." >&2
-      timeout 30 bash "$INTEL_FETCH_TWITTER" > /dev/null 2>&1 || true &
+      timeout 30 bash "$INTEL_FETCH_TWITTER" $intel_force_flag > /dev/null 2>&1 || true &
       twitter_pid=$!
     fi
     [[ -n "$rss_pid" ]] && wait "$rss_pid" 2>/dev/null || true

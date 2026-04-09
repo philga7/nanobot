@@ -1,12 +1,13 @@
 ---
 name: osint
 description: >-
-  OSINT intelligence briefing. Queries 28 open-source intelligence APIs
+  OSINT intelligence briefing. Queries 29 open-source intelligence APIs
   (GDELT, FRED, FIRMS, EIA, BLS, CISA, markets, sanctions, conflict, weather,
   maritime, social, NASA missions) plus RSS feeds and Twitter/X signals from the
   intel pipeline, caches results for 15 minutes, and synthesizes a
-  leverage-first 8-section briefing. Trigger with "brief me", "intel brief",
-  "osint brief", "what's going on", "latest intelligence", or "refresh intel".
+  leverage-first 9-section briefing with cross-source correlation and narrative
+  tracking. Trigger with "brief me", "intel brief", "osint brief", "what's
+  going on", "latest intelligence", or "refresh intel".
 metadata: {"nanobot":{"emoji":"🔍","requires":{"bins":["curl","jq"]}}}
 ---
 
@@ -206,7 +207,47 @@ Environment overrides:
 - `OSINT_BRIEFING_CRON_EVENING` (default `0 18 * * *`)
 - `NANOBOT_AGENTS__DEFAULTS__WORKSPACE` (default `~/.wrenvps/workspace`)
 
-## 8-Section Briefing Framework
+## Unified Intel Pipeline
+
+Sourcing is handled by `~/.wrenvps/intel/sources/` — a separate sourcing layer
+that fetches API, RSS, and Twitter data into `~/.wrenvps/intel/cache/`.
+
+When synthesizing a brief, read cached data from:
+- `~/.wrenvps/intel/cache/api/` — API source data (GDELT, FRED, CISA, etc.)
+- `~/.wrenvps/intel/cache/rss/` — RSS feed data (CSIS, Brookings, Defense One, etc.)
+- `~/.wrenvps/intel/cache/twitter/` — Twitter data (Mario Nawfal, Chad Pergram, etc.)
+- `~/.wrenvps/intel/cache/_all.json` — Combined output from fetch-all.sh
+
+Priority topics and weights: `~/.wrenvps/intel/config/topics.json`
+Source registry: `~/.wrenvps/intel/config/sources.json`
+
+To refresh all sources before briefing: `bash ~/.wrenvps/intel/sources/fetch-all.sh`
+To refresh a single layer: `bash ~/.wrenvps/intel/sources/fetch-rss.sh` (etc.)
+
+## Source Tier Classification
+
+```
+Mainstream: Reuters, AP, BBC, CNN, NYT, WSJ, WaPo, Guardian, ABC, NBC, CBS, Fox News, Chad Pergram
+Alternative: Substack, Rumble, BitChute, Telegram channels, Gab, Gettr, Truth Social, Mario Nawfal, RawsAlerts, Leading Report
+Fringe: ZeroHedge, Infowars, NaturalNews, Gateway Pundit, Breitbart, Epoch Times, Revolver, Daily Caller, Citizen Free Press
+```
+
+## Correlation Topics Watch List
+
+Reference list for Section 9 (agent should identify emerging topics beyond this list):
+
+```
+Economy: tariffs, Fed rates, inflation, housing, supply chain, layoffs
+Geopolitics: China-Taiwan, Russia-Ukraine, Israel-Gaza, Iran
+Finance: crypto regulation, banking stress
+Politics: elections, immigration
+Tech: AI regulation, deepfakes, antitrust
+Security: nuclear threats, cyber incidents
+Health: pandemics, outbreaks
+Environment: climate events, extreme weather
+```
+
+## 9-Section Briefing Framework
 
 When producing a brief, synthesize ALL available source data (API + RSS + Twitter) into this structure.
 
@@ -233,6 +274,7 @@ Label RSS/Twitter items with their tier (mainstream / alternative / fringe) wher
    Top 3-5 developments. What happened, who is involved, why it matters,
    what changes.
    Include BREAKING-tagged items first if any matched major_event_keywords.
+   Note any individual dominating the current news cycle (3+ stories).
 
 4. PATTERN RECOGNITION
    Cross-source correlations across all three layers:
@@ -263,6 +305,21 @@ Label RSS/Twitter items with their tier (mainstream / alternative / fringe) wher
    Data quality assessment, gaps in coverage, what relies on soft signals
    vs. hard data, any sources that failed or returned stale data.
    Note which layers were available (API / RSS / Twitter) and any degraded feeds.
+
+9. CROSS-SOURCE CORRELATION
+   Stories appearing across multiple independent sources:
+   - Same event reported by 3+ sources → high confidence signal
+   - Escalation pattern (new details, broader impact) vs. rehash
+   - Source divergence (different framing = narrative split)
+   - Fringe-to-mainstream crossover (story originating from alternative
+     sources now appearing in mainstream outlets)
+   - For each correlation: sources involved, what's converging, what differs
+
+   Narrative tracking (within correlation section):
+   - Fringe-to-mainstream crossover: flag stories crossing source boundaries
+   - Narrative divergence: same event, different framing across source types
+   - Disinfo amplification: known disinfo narratives gaining traction
+   - Source classification reference: fringe / alternative / mainstream
 
 GEORGIA DESK (append when Georgia-relevant content found)
    Items from AJC, GPB, or matching Georgia/Atlanta/Kemp/Warnock keywords.
