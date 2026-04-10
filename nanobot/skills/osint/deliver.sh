@@ -167,6 +167,15 @@ if [[ -f "$INTEL_TOPICS" ]]; then
   tier_fringe_inline="$(jq -c '[(.source_tier_classification.fringe // [])[] | ascii_downcase]' "$INTEL_TOPICS" 2>/dev/null || echo "[]")"
 fi
 
+# --- KEY INDICATORS (Crucix API sources from brief .sources) ---
+KEY_INDICATORS_JQ="${SCRIPT_DIR}/key-indicators.jq"
+api_section=""
+if [[ -f "$KEY_INDICATORS_JQ" ]]; then
+  api_section="$(
+    echo "$brief_json" | jq -r -f "$KEY_INDICATORS_JQ" 2>/dev/null || true
+  )"
+fi
+
 # --- RSS section: ranked by topic weight desc, then recency desc, top 10 ---
 rss_section=""
 if (( rss_items > 0 )); then
@@ -366,6 +375,13 @@ body="${title}
 Time (UTC): ${timestamp}
 Coverage: ${total_sources} API sources | ${rss_items} RSS items | ${twitter_items} tweets (${errors} degraded/error)
 "
+
+if [[ -n "$api_section" ]]; then
+  body+="
+KEY INDICATORS
+${api_section}
+"
+fi
 
 if [[ -n "$elevated_items" ]]; then
   body+="
