@@ -10,7 +10,8 @@
 #   BIRD_API_URL   Base URL (default http://127.0.0.1:18791)
 #   INTEL_DIR      Intel root (default ~/.wrenvps/intel)
 #
-# Raw HTTP bodies are written to a temp file and parsed in Python so shell quoting never mangles JSON.
+# Raw HTTP bodies are written to a temp file and parsed in Python (no shell interpolation of JSON).
+# Parser logic matches ~/.wrenvps/intel/sources/fetch-twitter.sh: JSON unwrap, ─{3,} blocks, line filters.
 set -euo pipefail
 
 INTEL_DIR="${INTEL_DIR:-${HOME}/.wrenvps/intel}"
@@ -103,51 +104,53 @@ import sys
 
 
 def main() -> None:
-    path, handle, fts = sys.argv[1], sys.argv[2].lstrip("@"), sys.argv[3]
+    path, clean_handle, fts = sys.argv[1], sys.argv[2].lstrip("@"), sys.argv[3]
     raw = pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
-    # Bird-api /timeline returns JSON {"ok":true,"output":" @Handle (Name): ...\\n─\\n..."}.
-    # Extract .output before splitting so we never treat the JSON wrapper as a tweet.
+
+    # If bird-api returned JSON, extract the .output field first (matches VPS fetch-twitter.sh).
     if raw.strip().startswith("{"):
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
-                raw = str(parsed.get("output") or parsed.get("text") or raw)
+                raw = str(parsed.get("output", raw))
         except json.JSONDecodeError:
             pass
-    text_body = raw
 
-    # Strip leading @DisplayName (Display Name): from each tweet body (handle is stored separately).
-    _strip_lead = re.compile(r"^\s*@[\w]+\s*\([^)]*\):\s*")
+    # Strip one leading @Handle (Display Name): prefix (handle stored separately on each item).
+    raw = re.sub(r"^\s*@[\w]+\s*\([^)]*\):\s*", "", raw)
 
+    # Bird-api returns text blocks separated by three or more ─ (U+2500).
+    blocks = re.split(r"\u2500{3,}", raw)
     items: list[dict] = []
-    # Primary: bird separates tweets with a horizontal rule line (U+2500 ─).
-    em_dash = "\u2500"
-    if em_dash in text_body:
-        parts = re.split(r"(?:\r?\n)\s*\u2500+\s*(?:\r?\n|$)", text_body)
-    else:
-        # Fallback: split where a new tweet starts (@handle (name):).
-        parts = re.split(r"(?=^\s*@[A-Za-z0-9_]{1,30}\s+\()", text_body, flags=re.MULTILINE)
-
-    for part in parts:
-        text = part.strip()
-        if not text:
+    for block in blocks:
+        block = block.strip()
+        if not block:
             continue
-        text = _strip_lead.sub("", text, count=1)
-        if text:
-            items.append({"handle": handle, "text": text})
-
-    if not items and text_body.strip():
-        text = _strip_lead.sub("", text_body.strip(), count=1)
-        if text:
-            items.append({"handle": handle, "text": text})
+        lines = block.split("\n")
+        text_lines: list[str] = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("VIDEO:") or line.startswith("PHOTO:") or line.startswith("QT:"):
+                continue
+            if re.match(r"^https?://", line):
+                continue
+            if re.match(r"^\w{3} \w{3} \d{1,2}", line) and len(line) < 40:
+                continue
+            text_lines.append(line)
+        if text_lines:
+            items.append({"text": " ".join(text_lines)[:500], "handle": clean_handle})
+        if len(items) >= 15:
+            break
 
     acct = {
-        "handle": f"@{handle}",
+        "handle": f"@{clean_handle}",
         "items": items,
         "source": "twitter",
         "fetched_at": fts,
     }
-    out_obj = {"fetched_at": fts, "accounts": {handle.lower(): acct}}
+    out_obj = {"fetched_at": fts, "accounts": {clean_handle.lower(): acct}}
     print(json.dumps(out_obj, ensure_ascii=False))
 
 
