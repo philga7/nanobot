@@ -9,14 +9,15 @@ SOURCES_DIR="${SCRIPT_DIR}/sources"
 CACHE_DIR="${SCRIPT_DIR}/cache"
 mkdir -p "$CACHE_DIR"
 
-# Source OSINT API keys if .env exists
-OSINT_ENV="${HOME}/.wrenvps/osint/.env"
-if [[ -f "$OSINT_ENV" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  source "$OSINT_ENV"
-  set +a
-fi
+# API keys: legacy osint/.env first, then intel/config/.env (canonical overrides)
+for OSINT_ENV in "${HOME}/.wrenvps/osint/.env" "${HOME}/.wrenvps/intel/config/.env"; do
+  if [[ -f "$OSINT_ENV" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$OSINT_ENV"
+    set +a
+  fi
+done
 
 FLAG="${1:-}"
 TIMEOUT=15  # Max seconds per source fetch

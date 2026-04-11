@@ -27,14 +27,15 @@ INTEL_CACHE_TWITTER="${INTEL_DIR}/cache/twitter"
 INTEL_TOPICS="${INTEL_DIR}/config/topics.json"
 INTEL_SOURCES_CFG="${INTEL_DIR}/config/sources.json"
 
-# Source OSINT API keys if .env exists
-OSINT_ENV="${HOME}/.wrenvps/osint/.env"
-if [[ -f "$OSINT_ENV" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  source "$OSINT_ENV"
-  set +a
-fi
+# API keys: legacy ~/.wrenvps/osint/.env first, then ~/.wrenvps/intel/config/.env (canonical overrides)
+for OSINT_ENV in "${HOME}/.wrenvps/osint/.env" "${HOME}/.wrenvps/intel/config/.env"; do
+  if [[ -f "$OSINT_ENV" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$OSINT_ENV"
+    set +a
+  fi
+done
 
 FLAG=""
 DESK="${OSINT_DESK:-intel}"

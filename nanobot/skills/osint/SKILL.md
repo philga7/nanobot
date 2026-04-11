@@ -45,7 +45,7 @@ The briefing pulls from three parallel data layers:
 
 | Layer | Source | Config |
 |-------|--------|--------|
-| **API** | 30+ scripts in `sources/` | API keys in `~/.wrenvps/osint/.env` |
+| **API** | 30+ scripts in `sources/` | API keys in `~/.wrenvps/intel/config/.env` (legacy: `~/.wrenvps/osint/.env`) |
 | **RSS** | 20+ RSS feeds (SCOTUSblog, Times of Israel, CSIS, Brookings, Defense One, War on the Rocks, AJC, GPB, etc.) | `~/.wrenvps/intel/config/sources.json` |
 | **Twitter/X** | 11 accounts via bird-api (Mario Nawfal, Chad Pergram, RawsAlerts, Mossad_il, Leading Report, etc.) | `~/.wrenvps/intel/config/sources.json` |
 
@@ -195,7 +195,7 @@ issue on the ACLED side, not a client-side parsing failure.
 
 ### WrenVPS env setup
 
-Add these to your local `.env.wrenvps` (not committed):
+Put OSINT API keys in `~/.wrenvps/intel/config/.env` (or legacy `~/.wrenvps/osint/.env`; scripts load both, with intel winning on duplicates). You can also mirror into `.env.wrenvps` for compose (not committed):
 
 ```bash
 OSINT_ACLED_EMAIL=your-acled-email@example.com
@@ -310,8 +310,10 @@ Environment overrides:
 
 ## Unified Intel Pipeline
 
-Sourcing is handled by `~/.wrenvps/intel/sources/` — a separate sourcing layer
-that fetches API, RSS, and Twitter data into `~/.wrenvps/intel/cache/`.
+Sourcing is handled by `~/.wrenvps/intel/` — config under `config/` (e.g.
+`sources.json`, `topics.json`, `scoring.json`, `.env`), scripts under
+`sources/`, caches under `cache/`, optional `history/` and `dispatch/` docs.
+The `fetch-*.sh` layer writes API, RSS, and Twitter data into `cache/`.
 
 When synthesizing a brief, read cached data from:
 - `~/.wrenvps/intel/cache/api/` — API source data (GDELT, FRED, CISA, etc.)
@@ -510,7 +512,7 @@ GEORGIA DESK (append when Georgia-relevant content found)
 ## Delivery Configuration (Ops Mode)
 
 When automated delivery is enabled, OSINT briefing output should route through
-the same Slack + ntfy delivery pattern used by the newsroom pipeline.
+Slack + ntfy using the same tokens and patterns as `deliver.sh` (see env vars above).
 
 Reference config: `delivery.example.json`
 
