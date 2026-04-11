@@ -45,7 +45,9 @@ Recommended order:
 2. Run `./scripts/smoke-stack.sh` from `deploy/news-stack/` to confirm loopback HTTP health before touching Nanobot.
 3. Add optional top-level **`news_stack`** to Nanobot `config.json` as you wire each integration (nested keys use the usual camelCase aliases: `officeBaseUrl`, `qdrantUrl`, `qdrantApiKey`). Empty strings mean "not configured"; Nanobot does not require them to start.
 
-There is no production HTTP client in this repo yet that calls those URLs; contracts and API metadata exist first so you can validate the stack and config shape in isolation.
+There is no production HTTP client in this repo yet that calls Qdrant or Office URLs; contracts and config exist so you can validate the stack in isolation.
+
+**What core does use today:** the OpenAI-compatible HTTP API (`nanobot/api/server.py`) attaches `news_stack_decide_context` on every `/v1/chat/completions` request via `build_api_path_process_direct_metadata()` in `nanobot/integrations/news_stack/api_context.py` — the same `DecideAndActContext` shape gateway bridges use. That is metadata for the agent loop only; it does not query Qdrant or call Office. Optional `news_stack` URLs in `config.json` are for future or out-of-repo HTTP clients. If nothing else hits Qdrant, you can stop the Compose service to save resources without changing nanobot startup.
 
 ## Suggested Runtime Wiring
 

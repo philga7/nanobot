@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BRIEF_SCRIPT="${SCRIPT_DIR}/brief.sh"
-DEFAULT_ENV="${HOME}/.wrenvps/osint/.env"
 
 INTEL_DIR="${HOME}/.wrenvps/intel"
 INTEL_TOPICS="${INTEL_DIR}/config/topics.json"
@@ -54,13 +53,15 @@ if [[ -n "$JSON_OUT" && "$DRY_RUN" == "true" ]]; then
   exit 1
 fi
 
-# Load optional env file for OSINT and delivery credentials.
-if [[ -f "$DEFAULT_ENV" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  source "$DEFAULT_ENV"
-  set +a
-fi
+# Load optional env files: legacy osint/.env first, then intel/config/.env (canonical overrides)
+for _osint_env in "${HOME}/.wrenvps/osint/.env" "${HOME}/.wrenvps/intel/config/.env"; do
+  if [[ -f "$_osint_env" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$_osint_env"
+    set +a
+  fi
+done
 
 desk_json="{}"
 desk_api_json="[]"
@@ -99,9 +100,8 @@ brief_json="$(bash "$BRIEF_SCRIPT" $([[ "$FORCE" == "true" ]] && echo "--force")
 
 # Normalize nested intel RSS/Twitter shapes (feeds.*.items / accounts.*.items) to flat
 # arrays so downstream jq matches brief.sh output from both layouts.
-# Twitter: unwrap bird-api JSON blobs in .text. Prefer the repo copy of
-# intel-pipeline/fetch-twitter.sh on the VPS (~/.wrenvps/intel/sources/); deliver
-# still hardens malformed cache rows here.
+# Twitter: unwrap bird-api JSON blobs in .text. Canonical fetch is
+# ~/.wrenvps/intel/sources/fetch-twitter.sh; deliver still hardens malformed cache rows here.
 if normalized="$(
   echo "$brief_json" | jq -c '
     def strip_first_line_handle(text):
