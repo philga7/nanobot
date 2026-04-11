@@ -1,7 +1,7 @@
 <div align="center">
   <img src="nanobot_logo.png" alt="nanobot" width="420">
   <h1>nanobot</h1>
-  <p><strong>Community fork</strong> of <a href="https://github.com/HKUDS/nanobot">HKUDS/nanobot</a></p>
+  <p><strong>Personal fork</strong> of <a href="https://github.com/HKUDS/nanobot">HKUDS/nanobot</a> — customized for the maintainer’s usage</p>
   <p>
     <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
@@ -10,7 +10,7 @@
   </p>
 </div>
 
-This repo is **[philga7/nanobot](https://github.com/philga7/nanobot)** — an **unofficial, community-maintained fork** of **[HKUDS/nanobot](https://github.com/HKUDS/nanobot)**. It is **not affiliated** with the upstream project; use this repository for **fork-specific** issues and pull requests. It tracks `upstream/main` so you still benefit from upstream channels, memory, providers, and fixes.
+This repo is **[philga7/nanobot](https://github.com/philga7/nanobot)** — **my fork** of **[HKUDS/nanobot](https://github.com/HKUDS/nanobot)**. I merge **`upstream/main`** regularly to stay close to upstream channels, memory, providers, and fixes, and I’ve **customized** the tree for how I run nanobot (OSINT briefing, multi-instance deploy notes, cron hooks, and related tooling). Issues and PRs here are welcome for this fork; **general nanobot** work may still belong in the upstream repo.
 
 ## What this fork adds
 
@@ -59,9 +59,9 @@ pip install nanobot-ai
 
 ## Contributing
 
-- **This fork:** open issues and PRs here for OSINT, deployment docs, and other fork-specific work.
-- **Upstream:** bug fixes and general features may belong in [HKUDS/nanobot](https://github.com/HKUDS/nanobot); see upstream [CONTRIBUTING.md](CONTRIBUTING.md).
-- Branching matches upstream convention: **`main`** for integrated work, **`nightly`** for experiments — details in [AGENTS.md](AGENTS.md).
+- **Here:** issues and PRs for this fork’s customizations (OSINT, deployment docs, etc.).
+- **Upstream:** improvements that benefit everyone are best sent to [HKUDS/nanobot](https://github.com/HKUDS/nanobot); see [CONTRIBUTING.md](CONTRIBUTING.md) there.
+- Branching follows the same convention as upstream: **`main`** for integrated work, **`nightly`** for experiments — see [AGENTS.md](AGENTS.md).
 
 ---
 
