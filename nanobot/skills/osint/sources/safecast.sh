@@ -20,8 +20,11 @@ fi
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+LAT="${OSINT_SAFECAST_LAT:-37.7749}"
+LON="${OSINT_SAFECAST_LON:--122.4194}"
+
 raw=$(curl -sf --max-time 10 \
-  "https://api.safecast.org/measurements.json?distance=10000&latitude=37.7749&longitude=-122.4194&limit=10&order=created_at+desc" 2>/dev/null) || {
+  "https://api.safecast.org/measurements.json?distance=10000&latitude=${LAT}&longitude=${LON}&limit=10&order=created_at+desc" 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"API request failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0
