@@ -1,4 +1,56 @@
 {
+  "priority_topics": {
+    "iran": 1.5,
+    "israel": 1.5,
+    "ice": 1.3,
+    "venezuela": 1.4,
+    "government shutdown": 1.2,
+    "shutdown": 1.2,
+    "tariff": 1.3,
+    "tariffs": 1.3,
+    "covid": 1.1,
+    "pandemic": 1.1,
+    "epstein": 1.2,
+    "doge": 1.2,
+    "election": 1.2,
+    "election integrity": 1.2
+  },
+  "ignored_topic_phrases": [],
+  "source_tier_classification": {
+    "mainstream": [
+      "reuters",
+      "ap",
+      "bbc",
+      "cnn",
+      "nyt",
+      "wsj",
+      "washington post",
+      "guardian",
+      "abc",
+      "nbc",
+      "cbs",
+      "fox news",
+      "chad pergram",
+      "times of israel"
+    ],
+    "alternative": [
+      "substack",
+      "mario nawfal",
+      "rawsalerts",
+      "leading report",
+      "citizen free press"
+    ],
+    "fringe": [
+      "zerohedge",
+      "infowars",
+      "naturalnews",
+      "gateway pundit",
+      "breitbart",
+      "epoch times",
+      "revolver",
+      "daily caller"
+    ]
+  },
   "desks": {
     "intel": {
       "channel": "C0AGWCQ1ZDE",

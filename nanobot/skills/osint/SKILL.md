@@ -4,19 +4,31 @@ description: >-
   OSINT intelligence briefing. Queries 30+ open-source intelligence APIs
   (GDELT, FRED, FIRMS, EIA, BLS, CISA, markets, sanctions, conflict, weather,
   maritime, social, NASA missions, precious metals, multi-model forecasts) plus
-  RSS feeds and Twitter/X signals from the
-  intel pipeline, caches results for 15 minutes, and synthesizes a
-  leverage-first 9-section briefing with cross-source correlation and narrative
-  tracking. Trigger with "brief me", "intel brief", "osint brief", "what's
-  going on", "latest intelligence", or "refresh intel".
+  RSS feeds and Twitter/X signals from the intel pipeline, caches results for
+  15 minutes, and produces structured brief JSON. Scheduled Slack delivery uses
+  agent-synthesized analyst-style briefs (not jq-assembled dumps). Interactive
+  runs can still use the full 9-section framework. Trigger with "brief me",
+  "intel brief", "osint brief", "what's going on", "latest intelligence", or
+  "refresh intel".
 metadata: {"nanobot":{"emoji":"🔍","requires":{"bins":["curl","jq"]}}}
 ---
 
 # OSINT Intelligence Briefing
 
 Act as a senior OSINT analyst. Query intelligence sources across three layers
-(API, RSS, Twitter/X), cache results, and deliver a leverage-first intelligence
-briefing with topic-weighted story prioritization.
+(API, RSS, Twitter/X), cache results, and deliver intelligence with
+topic-weighted prioritization.
+
+## Pipeline vs presentation
+
+- **Data pipeline (unchanged):** `brief.sh` collects API caches, RSS, and
+  Twitter/X into one JSON payload. Source scripts and the intel pipeline
+  (`fetch-twitter.sh`, `fetch-rss.sh`, etc.) feed that JSON.
+- **Presentation (scheduled Slack):** Cron runs `deliver.sh --json <file>` to
+  write raw brief JSON; the agent reads that file, synthesizes a narrative
+  brief with context and links, and posts to the desk Slack channel.
+- **Quick local check:** `deliver.sh --dry-run` still builds the legacy
+  jq-assembled text report to stdout (no Slack) for debugging.
 
 ## Trigger Phrases
 
@@ -48,15 +60,17 @@ Layer orchestration:
 
 Desk routing splits one mega-brief into **intel**, **investing**, and **weather** reports. Each desk has its own Slack channel, cron schedule, API allowlist, RSS/Twitter slugs, optional geo filter, and optional topic-weight key.
 
-Merge the example `desks` object into `~/.wrenvps/intel/config/topics.json` (alongside `priority_topics` and `source_tier_classification`). Copy from the repo:
+Merge the example into `~/.wrenvps/intel/config/topics.json`: `desks`,
+`priority_topics`, `ignored_topic_phrases`, and `source_tier_classification`.
+Copy from the repo:
 
 `nanobot/skills/osint/topics.desks.example.json`
 
-| Desk | Default role | Topic weights | Extra sections |
-|------|----------------|---------------|----------------|
-| **intel** | Geopolitics, sanctions, social signals | `topic_weights`: `"priority_topics"` | ELEVATED, RSS, Twitter/X, GEORGIA DESK |
-| **investing** | Markets, macro, energy, labor | `null` (no weighted ranking) | PRECIOUS METALS (gold/silver + daily % vs desk open), mortgage series via FRED |
-| **weather** | Local hazards + models | `null` | `geo_filter` on NOAA/FIRMS/Safecast; FORECAST MODELS (ECMWF / GFS / NAM via Open-Meteo) |
+| Desk | Default role | Topic weights | Notes |
+|------|----------------|---------------|--------|
+| **intel** | Geopolitics, sanctions, social signals | `topic_weights`: `"priority_topics"` | Cron brief: analyst-style narrative; `--dry-run` still shows legacy ELEVATED / RSS / Twitter / Georgia subsections |
+| **investing** | Markets, macro, energy, labor | `null` (no weighted ranking) | Highlight precious metals when move ≥ desk threshold (default 5%) |
+| **weather** | Local hazards + models | `null` | `geo_filter` on NOAA/FIRMS/Safecast; multi-model forecasts (ECMWF / GFS / NAM) |
 
 **API ids** in `sources.api` use underscores (`cisa_kev`, `gold_api`). Hyphenated names like `gold-api` are normalized to `gold_api` when matching scripts.
 
@@ -71,17 +85,34 @@ Merge the example `desks` object into `~/.wrenvps/intel/config/topics.json` (alo
 ```bash
 bash brief.sh --desk weather --force
 bash deliver.sh --desk investing --dry-run
+bash deliver.sh --desk intel --force --json /tmp/osint_brief_intel.json
 ```
 
 Default if `--desk` is omitted: **`intel`** (same as pre-desk behavior when `desks` is absent: all API caches, all RSS/Twitter items).
 
-## Topic Weighting
+## Topic weighting and conversational topic lists
 
-Priority topics are read from `~/.wrenvps/intel/config/topics.json`:
+Structured scoring still uses `~/.wrenvps/intel/config/topics.json`:
 
-- Items matching high-weight topics (Iran 1.5, Israel 1.5, ICE 1.3, Tariffs 1.3, DOGE 1.2, etc.) surface higher in sections 1-3
-- Items matching `major_event_keywords` get `:rotating_light: BREAKING` urgency tags
-- Items are labeled with tier from `source_tier_classification`: **mainstream**, **alternative**, or **fringe**
+- **`priority_topics`:** keyword → weight (e.g. Iran/Israel 1.5, ICE/tariffs 1.3).
+  Higher weight surfaces items earlier in ranked sections and in agent briefs.
+- **`ignored_topic_phrases`:** plain-language substrings (lowercased at runtime).
+  Any RSS or Twitter row whose title/headline/body contains a phrase is dropped
+  after collection (before delivery). Start empty; add via conversation, e.g.
+  “ignore celebrity gossip” or “suppress British royal family news.”
+- **`major_event_keywords`:** items matching these can get `:rotating_light: BREAKING` urgency tags.
+- **`source_tier_classification`:** **mainstream**, **alternative**, **fringe**.
+  **Citizen Free Press** is treated as a preferred source: keep it under
+  **alternative** (not fringe) so it ranks with elevated attention.
+
+**Preferred topics (plain English, 2026-04-11 baseline):** Iran, Israel, ICE
+Enforcement, Venezuela, Government Shutdown, Tariffs, COVID/Pandemic, Epstein
+Files, DOGE Audits, Election Integrity. When the user adds interests in natural
+language, map them into `priority_topics` keys and weights; do not require the
+user to edit JSON by hand.
+
+**Ignored topics:** maintain `ignored_topic_phrases` from user instructions the
+same way.
 
 ## Georgia Desk
 
@@ -208,19 +239,32 @@ To refresh all caches without producing a brief:
 bash /path/to/skills/osint/refresh-all.sh
 ```
 
-## Automated Delivery (Slack + ntfy)
+## Automated delivery
 
-Use `deliver.sh` to post a briefing summary to Slack and ntfy:
+**Production (agent-synthesized):** Cron triggers an **agent turn** (not
+`shell_exec`). The agent runs `deliver.sh --desk … --force --json /tmp/…json`,
+reads the JSON, writes the narrative brief, and posts to Slack.
+
+**Legacy jq report (debug only):** `--dry-run` assembles the jq template body
+and prints to stdout (no Slack, no ntfy).
+
+**Direct post (optional):** Without `--json` or `--dry-run`, `deliver.sh` can
+still post the jq-assembled body to Slack/ntfy if tokens are set (mainly for
+local testing).
 
 ```bash
 bash /path/to/skills/osint/deliver.sh --force
+bash /path/to/skills/osint/deliver.sh --desk intel --force --json /tmp/osint_brief_intel.json
 ```
 
 Supported flags:
 
 - `--desk intel|investing|weather` selects desk config (default **`intel`**)
-- `--dry-run` prints the outgoing message without posting
-- `--template intelSignal|breakingBullet` chooses briefing style
+- `--json <filepath>` writes normalized brief JSON to a file, prints the path on
+  stdout, exits (no Slack/ntfy). Use this for scheduled agent briefs.
+- `--dry-run` prints the jq-assembled message without posting (mutually
+  exclusive with `--json`)
+- `--template intelSignal|breakingBullet` chooses briefing style (for `--dry-run` / direct post)
 - `--channel-id C0AGWCQ1ZDE` overrides Slack target channel id (overrides desk `channel` when set)
 
 Expected env vars:
@@ -230,9 +274,11 @@ Expected env vars:
 - `OSINT_BRIEFING_TEMPLATE` (default `intelSignal`)
 - `NTFY_URL`, `NTFY_TOPIC`, optional `NTFY_TOKEN`
 
-## Cron Setup (Full Ops)
+## Cron setup (agent-based delivery)
 
-Install three per-desk delivery jobs into the workspace cron store:
+Install three per-desk jobs as **`agent_turn`** payloads with `deliver=false`.
+Each message instructs the agent to run `deliver.sh … --json`, read the file,
+synthesize the brief, and post to the desk Slack channel.
 
 ```bash
 # preview only
@@ -240,15 +286,18 @@ python /path/to/skills/osint/install_cron.py
 
 # apply to workspace cron/jobs.json
 python /path/to/skills/osint/install_cron.py --apply
+
+# replace existing osint-* jobs after changing install script
+python /path/to/skills/osint/install_cron.py --apply --replace
 ```
 
 Jobs (America/New_York by default):
 
-| Job | Default cron | Command |
+| Job | Default cron | Payload |
 |-----|----------------|---------|
-| `osint-intel` | `0 7,18 * * *` | `deliver.sh --desk intel` |
-| `osint-investing` | `0 7 * * 1-5` | `deliver.sh --desk investing` |
-| `osint-weather` | `0 6,16 * * *` | `deliver.sh --desk weather` |
+| `osint-intel` | `0 7,18 * * *` | Agent: `deliver.sh --desk intel --force --json /tmp/osint_brief_intel.json` → synthesize → `#intel-signals` |
+| `osint-investing` | `0 7 * * 1-5` | Agent: `… --json /tmp/osint_brief_investing.json` → `#investing` |
+| `osint-weather` | `0 6,16 * * *` | Agent: `… --json /tmp/osint_brief_weather.json` → `#weather` |
 
 Environment overrides:
 
@@ -256,6 +305,8 @@ Environment overrides:
 - `OSINT_BRIEFING_CRON_INVESTING` (default `0 7 * * 1-5`)
 - `OSINT_BRIEFING_CRON_WEATHER` (default `0 6,16 * * *`)
 - `NANOBOT_AGENTS__DEFAULTS__WORKSPACE` (default `~/.wrenvps/workspace`)
+- `OSINT_CRON_SKILL_ROOT` — directory passed to `cd` in cron messages (default
+  `/root/projects/nanobot/nanobot/skills/osint`)
 
 ## Unified Intel Pipeline
 
@@ -274,12 +325,82 @@ Source registry: `~/.wrenvps/intel/config/sources.json`
 To refresh all sources before briefing: `bash ~/.wrenvps/intel/sources/fetch-all.sh`
 To refresh a single layer: `bash ~/.wrenvps/intel/sources/fetch-rss.sh` (etc.)
 
-## Source Tier Classification
+## Source tier classification
 
 ```
 Mainstream: Reuters, AP, BBC, CNN, NYT, WSJ, WaPo, Guardian, ABC, NBC, CBS, Fox News, Chad Pergram
-Alternative: Substack, Rumble, BitChute, Telegram channels, Gab, Gettr, Truth Social, Mario Nawfal, RawsAlerts, Leading Report
-Fringe: ZeroHedge, Infowars, NaturalNews, Gateway Pundit, Breitbart, Epoch Times, Revolver, Daily Caller, Citizen Free Press
+Alternative: Substack, Rumble, BitChute, Telegram channels, Gab, Gettr, Truth Social, Mario Nawfal,
+  RawsAlerts, Leading Report, Citizen Free Press (preferred; keep in alternative, not fringe)
+Fringe: ZeroHedge, Infowars, NaturalNews, Gateway Pundit, Breitbart, Epoch Times, Revolver, Daily Caller
+```
+
+## Scheduled Slack brief format (agent-synthesized)
+
+For cron-driven posts, write like an analyst morning read — not a data dump.
+
+1. **Lead with what matters most** — priority topics first by significance.
+2. **Context** — why each item matters, not only the headline.
+3. **Links** — use `url` on RSS/Twitter rows, `nvd_url` on CISA KEV items,
+   `series_links` on FRED, and other URLs present in the JSON for “dig deeper.”
+4. **Summarize** — group related items narratively instead of listing every point.
+5. **Scannable** — target under ~2 minutes’ reading time.
+6. **Voice** — **Intel:** analytical/geopolitical; **Investing:** market-focused;
+   **Weather:** practical and location-specific (use desk `geo_filter.cities`).
+
+### Example: Intel desk brief
+
+```
+INTEL BRIEF | 11 Apr 2026
+
+IRAN/ISRAEL
+Ceasefire odds rising — Polymarket shows 56% chance of a new nuclear deal after the US-Iran ceasefire announcement. Netanyahu's Likud took a hit in Israeli polls, with most Israelis now opposing further escalation. Hezbollah fired a missile at Ashdod; interception debris triggered sirens in Tel Aviv. [Mario Nawfal] [Times of Israel]
+
+US POLICY
+Trump issued a statement on Tucker Carlson, Megyn Kelly, Candace Owens, and Alex Jones — no policy details yet. Congress facing pressure to reconvene. [Chad Pergram] [Citizen Free Press]
+
+CYBER
+CISA added 3 new vulnerabilities to KEV: EPMM (active exploitation), FortiClient EMS, and an unpatched client vulnerability. Patch immediately if exposed. [CISA]
+
+Sources: 7 API | 16 RSS | 6 Twitter | 2 degraded (ACLED, GDELT)
+```
+
+### Example: Investing desk brief
+
+```
+INVESTING BRIEF | 11 Apr 2026
+
+MARKETS
+S&P 500: 6,817 (flat) | Dow: 47,917 (flat) | Nasdaq: 22,903 (flat) | VIX: 19.23
+Gold: $4,771 (flat) | Silver: $76 (flat) | Crude: $95.63 | Bitcoin: $73,015
+
+RATES
+Fed Funds: 3.64% | 10Y: 4.32% | 10Y-2Y spread: +0.50bp (not inverted)
+30Y Mortgage: 6.37% | 15Y Mortgage: 5.74%
+Treasury Bills: 3.70% | Total US Debt: $38.9T
+
+ECONOMIC DATA
+Unemployment: 4.3% (Mar) | CPI: 330.3 (Mar) | Payroll: 158,637 (Mar)
+Supply chain pressure (GSCPI): 2 data points
+
+Sources: 7 API | 2 RSS | 0 degraded
+```
+
+### Example: Weather desk brief
+
+```
+WEATHER BRIEF | 11 Apr 2026 — Jefferson, Dahlonega, Statesboro GA
+
+FORECAST (3-day model comparison)
+Jefferson: Fri 83°F/51°F, Sat 83°F/51°F, Sun 81°F/51°F — models agree within 4°F
+Dahlonega: Fri 81°F/45°F, Sat 81°F/53°F, Sun 80°F/55°F — models agree within 4°F
+Statesboro: Fri 85°F/54°F, Sat 83°F/55°F, Sun 84°F/55°F — models agree within 2°F
+
+No rain expected across all three locations through Sunday. Light winds 5-7 mph.
+
+ALERTS
+No active alerts for your area. (15 national alerts filtered out — all outside GA/surrounding states.)
+
+Sources: 4 API | 0 degraded
 ```
 
 ## Correlation Topics Watch List
@@ -297,9 +418,10 @@ Health: pandemics, outbreaks
 Environment: climate events, extreme weather
 ```
 
-## 9-Section Briefing Framework
+## 9-section briefing framework (interactive / deep-dive)
 
-When producing a brief, synthesize ALL available source data (API + RSS + Twitter) into this structure.
+When the user asks for a full analysis (not only a short Slack-style brief),
+synthesize ALL available source data (API + RSS + Twitter) into this structure.
 
 **Topic weighting rule:** Items from RSS/Twitter matching high-weight topics in `topic_weights`
 (Iran ≥1.5, Israel ≥1.5, ICE ≥1.3, Tariffs ≥1.3, DOGE ≥1.2, etc.) must surface in sections

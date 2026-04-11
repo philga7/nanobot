@@ -16,9 +16,21 @@ def _workspace_path() -> Path:
     return Path(configured).expanduser()
 
 
+def _skill_dir() -> str:
+    return os.environ.get(
+        "OSINT_CRON_SKILL_ROOT",
+        "/root/projects/nanobot/nanobot/skills/osint",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Install OSINT briefing cron jobs (per-desk)")
     parser.add_argument("--apply", action="store_true", help="Write jobs (default: dry run)")
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Remove existing osint-intel / osint-investing / osint-weather jobs, then add",
+    )
     parser.add_argument("--timezone", default="America/New_York")
     parser.add_argument(
         "--intel-cron",
@@ -39,35 +51,75 @@ def main() -> int:
 
     workspace = _workspace_path()
     store_path = workspace / "cron" / "jobs.json"
-    base_cmd = "bash nanobot/skills/osint/deliver.sh"
+    skill = _skill_dir().rstrip("/")
+
+    intel_msg = (
+        "Run the OSINT intel desk brief. "
+        f"Execute: cd {skill} && bash deliver.sh --desk intel --force "
+        "--json /tmp/osint_brief_intel.json. "
+        "Then read the JSON file at /tmp/osint_brief_intel.json and synthesize an "
+        "analyst-style intelligence brief. Post the brief to Slack #intel-signals "
+        "(C0AGWCQ1ZDE). Use the brief format from the OSINT skill docs — lead with "
+        "priority topics, provide context, include links, be concise. "
+        "Do NOT just list raw data points."
+    )
+    investing_msg = (
+        "Run the OSINT investing desk brief. "
+        f"Execute: cd {skill} && bash deliver.sh --desk investing --force "
+        "--json /tmp/osint_brief_investing.json. "
+        "Then read the JSON file at /tmp/osint_brief_investing.json and synthesize a "
+        "market-focused brief. Post the brief to Slack #investing (C0AG5NSKVCL). "
+        "Use the brief format from the OSINT skill docs — focus on market moves, "
+        "rates, and economic data. Highlight any precious metals moves >= 5%."
+    )
+    weather_msg = (
+        "Run the OSINT weather desk brief. "
+        f"Execute: cd {skill} && bash deliver.sh --desk weather --force "
+        "--json /tmp/osint_brief_weather.json. "
+        "Then read the JSON file at /tmp/osint_brief_weather.json and synthesize a "
+        "practical weather brief for Jefferson, Dahlonega, and Statesboro GA. "
+        "Post the brief to Slack #weather (C0AGWC921TJ). "
+        "Use the brief format from the OSINT skill docs — focus on forecast model "
+        "agreement, precipitation, and any alerts for your area. If no alerts, say so explicitly."
+    )
 
     planned = [
-        ("osint-intel", args.intel_cron, f"{base_cmd} --desk intel"),
-        ("osint-investing", args.investing_cron, f"{base_cmd} --desk investing"),
-        ("osint-weather", args.weather_cron, f"{base_cmd} --desk weather"),
+        ("osint-intel", args.intel_cron, intel_msg),
+        ("osint-investing", args.investing_cron, investing_msg),
+        ("osint-weather", args.weather_cron, weather_msg),
     ]
 
     print(f"Workspace: {workspace}")
     print(f"Cron store: {store_path}")
-    for name, expr, cmd in planned:
-        print(f"- {name}: {expr} ({args.timezone}) -> {cmd}")
+    print(f"OSINT skill dir (in job messages): {skill}")
+    for name, expr, msg in planned:
+        print(f"- {name}: {expr} ({args.timezone})")
+        print(f"  message ({len(msg)} chars): {msg[:120]}...")
 
     if not args.apply:
         print("Dry run only. Re-run with --apply to install jobs.")
         return 0
 
     cron = CronService(store_path)
-    existing = {job.name for job in cron.list_jobs(include_disabled=True)}
+    if args.replace:
+        targets = {name for name, _, _ in planned}
+        for job in cron.list_jobs(include_disabled=True):
+            if job.name in targets:
+                cron.remove_job(job.id)
+                print(f"Removed job: {job.name} ({job.id})")
 
-    for name, expr, cmd in planned:
-        if name in existing:
+    existing_names = {j.name for j in cron.list_jobs(include_disabled=True)}
+
+    for name, expr, message in planned:
+        if name in existing_names and not args.replace:
             print(f"Skip existing job: {name}")
             continue
         cron.add_job(
             name=name,
             schedule=CronSchedule(kind="cron", expr=expr, tz=args.timezone),
-            message=cmd,
-            payload_kind="shell_exec",
+            message=message,
+            deliver=False,
+            payload_kind="agent_turn",
         )
         print(f"Added job: {name}")
 

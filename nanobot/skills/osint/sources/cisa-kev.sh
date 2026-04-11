@@ -34,7 +34,8 @@ result=$(echo "$raw" | jq -c --arg ts "$ts" '{
   total_count: (.vulnerabilities | length),
   count: 10,
   vulnerabilities: [(.vulnerabilities | sort_by(.dateAdded) | reverse)[:10][] | {
-    cveID, vendorProject, product, vulnerabilityName, dateAdded, dueDate, knownRansomwareCampaignUse
+    cveID, vendorProject, product, vulnerabilityName, dateAdded, dueDate, knownRansomwareCampaignUse,
+    nvd_url: ("https://nvd.nist.gov/vuln/detail/" + .cveID)
   }]
 }' 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"JSON parse failed\",\"fetched_at\":\"${ts}\"}"

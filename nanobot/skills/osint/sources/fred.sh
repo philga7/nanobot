@@ -42,10 +42,17 @@ done
 
 series_json+="}"
 
-result=$(jq -nc --arg ts "$ts" --argjson series "$series_json" '{
-  source: "fred",
-  fetched_at: $ts,
-  series: $series
-}')
+result=$(jq -nc --arg ts "$ts" --argjson series "$series_json" '
+  $series as $s
+  | {
+    source: "fred",
+    fetched_at: $ts,
+    series: $s,
+    series_links: (
+      [$s | to_entries[] | {key: .key, value: ("https://fred.stlouisfed.org/series/" + .key)}]
+      | from_entries
+    )
+  }
+')
 
 echo "$result" | tee "$CACHE_FILE"
