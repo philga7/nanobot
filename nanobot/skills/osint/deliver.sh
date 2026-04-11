@@ -52,6 +52,10 @@ desk_json="{}"
 desk_api_json="[]"
 geo_filter_json="null"
 topic_weights_key=""
+desk_rss_json="[]"
+desk_tw_json="[]"
+rss_filter_active="no"
+twitter_filter_active="no"
 
 if [[ -f "$INTEL_TOPICS" ]] && command -v jq >/dev/null 2>&1; then
   if jq -e --arg d "$DESK" '.desks != null and (.desks | has($d))' "$INTEL_TOPICS" >/dev/null 2>&1; then
@@ -59,6 +63,10 @@ if [[ -f "$INTEL_TOPICS" ]] && command -v jq >/dev/null 2>&1; then
     desk_api_json="$(echo "$desk_json" | jq -c '(.sources.api // []) | map(ascii_downcase | gsub("-"; "_"))' 2>/dev/null || echo "[]")"
     geo_filter_json="$(echo "$desk_json" | jq -c 'if .geo_filter == null then null else .geo_filter end' 2>/dev/null || echo "null")"
     topic_weights_key="$(echo "$desk_json" | jq -r 'if .topic_weights == null or .topic_weights == "" then "" else .topic_weights end' 2>/dev/null || echo "")"
+    desk_rss_json="$(echo "$desk_json" | jq -c '.sources.rss // []' 2>/dev/null || echo "[]")"
+    desk_tw_json="$(echo "$desk_json" | jq -c '.sources.twitter // []' 2>/dev/null || echo "[]")"
+    rss_filter_active="$(echo "$desk_json" | jq -r 'if (.sources | type) == "object" and (.sources | has("rss")) then "yes" else "no" end' 2>/dev/null || echo "no")"
+    twitter_filter_active="$(echo "$desk_json" | jq -r 'if (.sources | type) == "object" and (.sources | has("twitter")) then "yes" else "no" end' 2>/dev/null || echo "no")"
     if [[ "$CHANNEL_OVERRIDE" == "false" ]]; then
       dc="$(echo "$desk_json" | jq -r '.channel // empty' 2>/dev/null || true)"
       if [[ -n "$dc" && "$dc" != "null" ]]; then
@@ -162,19 +170,70 @@ if normalized="$(
   brief_json="$normalized"
 fi
 
+# Desk allow-lists from topics: when sources.rss / sources.twitter are present, filter
+# brief output here (brief.sh may still load full intel caches). Empty array => no items.
+if [[ "$rss_filter_active" == "yes" ]] || [[ "$twitter_filter_active" == "yes" ]]; then
+  brief_json="$(
+    echo "$brief_json" | jq -c \
+      --argjson rss_allow "$desk_rss_json" \
+      --argjson tw_allow "$desk_tw_json" \
+      --arg rss_on "$rss_filter_active" \
+      --arg tw_on "$twitter_filter_active" \
+      '
+      def norm_rss: ascii_downcase | gsub("-"; "");
+      def norm_tw: gsub("-"; "") | gsub("_"; "") | ascii_downcase;
+      (if $rss_on != "yes" then . else
+        .rss |= (
+          if ($rss_allow | length) == 0 then []
+          else map(select(
+              (.feed // .source // .id // "" | tostring | norm_rss) as $f
+              | ($rss_allow | map(norm_rss) | index($f) != null)
+            ))
+          end
+        )
+      end)
+      | (if $tw_on != "yes" then . else
+        .twitter |= (
+          if ($tw_allow | length) == 0 then []
+          else map(select(
+              (.handle // .user // .screen_name // "" | tostring | ltrimstr("@") | norm_tw) as $h
+              | ($tw_allow | map(norm_tw) | index($h) != null)
+            ))
+          end
+        )
+      end)
+      | .meta = ((.meta // {}) * {rss_items: (.rss | length), twitter_items: (.twitter | length)})
+    ' 2>/dev/null || echo "$brief_json"
+  )"
+fi
+
 timestamp="$(echo "$brief_json" | jq -r '.briefing_timestamp // .meta.generated_at // "unknown"')"
 total_sources="$(echo "$brief_json" | jq -r '.meta.total_api_sources // .meta.total_sources // 0')"
-errors="$(echo "$brief_json" | jq -r '.meta.sources_with_errors // 0')"
-rss_items="$(echo "$brief_json" | jq -r '.meta.rss_items // 0')"
-twitter_items="$(echo "$brief_json" | jq -r '.meta.twitter_items // 0')"
+rss_items="$(echo "$brief_json" | jq -r '(.rss // []) | length')"
+twitter_items="$(echo "$brief_json" | jq -r '(.twitter // []) | length')"
 intel_available="$(echo "$brief_json" | jq -r '.meta.intel_pipeline_available // false')"
+errors="$(
+  echo "$brief_json" | jq -r --argjson apis "$desk_api_json" '
+    [.sources // {} | to_entries[]
+      | select(
+          (.key | ascii_downcase | gsub("-"; "_")) as $kn
+          | (if ($apis | length) == 0 then true else ($apis | index($kn) != null) end)
+        )
+      | select(.value.error or .value.degraded == true)
+    ] | length
+  ' 2>/dev/null || echo "0"
+)"
 
-# --- Source health summary (desk API sources only — matches brief output) ---
+# --- Source health: only APIs on this desk (when desk lists sources.api) ---
 top_errors="$(
-  echo "$brief_json" | jq -r '
+  echo "$brief_json" | jq -r --argjson apis "$desk_api_json" '
+    def in_desk($k):
+      ($k | ascii_downcase | gsub("-"; "_")) as $kn
+      | if ($apis | length) == 0 then true else ($apis | index($kn) != null) end;
     (.sources // {})
     | to_entries
     | map(select(.value.error or .value.degraded == true))
+    | map(select(in_desk(.key)))
     | .[:5]
     | map("- " + .key + ": " + (.value.reason // .value.error // "degraded"))
     | if length == 0 then "- none" else .[] end
