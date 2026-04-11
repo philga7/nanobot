@@ -244,26 +244,79 @@ if [[ "$DESK" == "investing" ]]; then
   )"
 fi
 
-# --- FORECAST MODELS (weather desk) ---
+# --- FORECAST MODELS (weather desk): model spread + per-model day-0 detail ---
 forecast_section=""
 if [[ "$DESK" == "weather" ]]; then
-  forecast_section="$(
+  spread_lines="$(
     echo "$brief_json" | jq -r '
-      (.sources.forecast_models.cities // [])[] | . as $c
-      | ($c.name // "?") as $nm
+      def labs: ["ECMWF", "GFS", "NAM"];
+      def num(v):
+        if v == null then null
+        elif (v | type) == "number" then v
+        else (v | tonumber? // null) end;
+      def highs_at($c; $i):
+        [
+          labs[] as $L
+          | ($c.models[$L].daily.temperature_2m_max[$i] // null) as $v
+          | if $v == null then empty
+            else num($v) as $h
+            | if $h == null then empty else {m: $L, h: $h} end
+            end
+        ];
+      def spread_for_day($c; $i):
+        ($c.name // "?") as $nm
+        | highs_at($c; $i) as $hs
+        | (
+            ($c.models.ECMWF.daily.time // $c.models.GFS.daily.time // $c.models.NAM.daily.time // [])
+          ) as $times
+        | ($times[$i] // "") as $day
+        | if ($hs | length) < 2 then empty
+          else
+            ($hs | map(.h) | max) as $x
+            | ($hs | map(.h) | min) as $n
+            | ($x - $n) as $sp
+            | ($hs | map(select(.h == $x)) | map(.m) | unique | join("/")) as $warm
+            | ($hs | map(select(.h == $n)) | map(.m) | unique | join("/")) as $cool
+            | (if $sp >= 3 then " — disagree (>=3°C spread)" else "" end) as $flag
+            | "• \($nm) | \($day) — ΔHigh \($sp | tostring | .[0:4])°C (\($warm) \($x)° vs \($cool) \($n)°)\($flag)"
+          end;
+      (.sources.forecast_models.cities // [])[] as $c
       | (
-          ["ECMWF","GFS","NAM"][]
-          | . as $lab
-          | ($c.models[$lab].daily // {}) as $d
-          | ($d.time[0] // "") as $t0
-          | ($d.temperature_2m_max[0] // "?") as $hi
-          | ($d.temperature_2m_min[0] // "?") as $lo
-          | ($d.precipitation_probability_mean[0] // "?") as $pr
-          | ($d.wind_speed_10m_max[0] // "?") as $ws
-          | "• \($nm) [\($lab)] \($t0) Hi \($hi)° Lo \($lo)° | rain \($pr)% | wind \($ws)"
-        )
+          ($c.models.ECMWF.daily.time // $c.models.GFS.daily.time // $c.models.NAM.daily.time // [])
+          | length
+        ) as $nlen
+      | range(0; ([3, $nlen] | min)) as $i
+      | spread_for_day($c; $i)
     ' 2>/dev/null || true
   )"
+  detail_lines="$(
+    echo "$brief_json" | jq -r '
+      def labs: ["ECMWF", "GFS", "NAM"];
+      def num(v):
+        if v == null then null
+        elif (v | type) == "number" then v
+        else (v | tonumber? // null) end;
+      (.sources.forecast_models.cities // [])[] as $c
+      | ($c.name // "?") as $nm
+      | labs[] as $lab
+      | ($c.models[$lab].daily // {}) as $d
+      | ($d.time[0] // "") as $t0
+      | ((num($d.temperature_2m_max[0]) // "?") | tostring) as $hi
+      | ((num($d.temperature_2m_min[0]) // "?") | tostring) as $lo
+      | ($d.precipitation_probability_mean[0] // "?") as $pr
+      | ($d.wind_speed_10m_max[0] // "?") as $ws
+      | "• \($nm) [\($lab)] \($t0) Hi \($hi)° Lo \($lo)° | rain \($pr)% | wind \($ws)"
+    ' 2>/dev/null || true
+  )"
+  if [[ -n "${spread_lines//[$'\t\r\n ']}" ]]; then
+    forecast_section="Model spread (next 3 days, max high temp across models):
+${spread_lines}
+
+By model (first forecast day):
+${detail_lines}"
+  else
+    forecast_section="${detail_lines}"
+  fi
 fi
 
 # --- RSS section: ranked by topic weight desc, then recency desc, top 10 ---
