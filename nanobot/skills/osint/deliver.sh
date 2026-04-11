@@ -277,8 +277,8 @@ if [[ "$DESK" == "weather" ]]; then
             | ($x - $n) as $sp
             | ($hs | map(select(.h == $x)) | map(.m) | unique | join("/")) as $warm
             | ($hs | map(select(.h == $n)) | map(.m) | unique | join("/")) as $cool
-            | (if $sp >= 3 then " — disagree (>=3°C spread)" else "" end) as $flag
-            | "• \($nm) | \($day) — ΔHigh \($sp | tostring | .[0:4])°C (\($warm) \($x)° vs \($cool) \($n)°)\($flag)"
+            | (if $sp >= 5 then " — disagree (>=5°F spread)" else "" end) as $flag
+            | "• \($nm) | \($day) — ΔHigh \($sp | tostring | .[0:5])°F (\($warm) \($x)°F vs \($cool) \($n)°F)\($flag)"
           end;
       (.sources.forecast_models.cities // [])[] as $c
       | (
@@ -305,14 +305,14 @@ if [[ "$DESK" == "weather" ]]; then
       | ((num($d.temperature_2m_min[0]) // "?") | tostring) as $lo
       | ($d.precipitation_probability_mean[0] // "?") as $pr
       | ($d.wind_speed_10m_max[0] // "?") as $ws
-      | "• \($nm) [\($lab)] \($t0) Hi \($hi)° Lo \($lo)° | rain \($pr)% | wind \($ws)"
+      | "• \($nm) [\($lab)] \($t0) Hi \($hi)°F Lo \($lo)°F | rain \($pr)% | wind \($ws) mph"
     ' 2>/dev/null || true
   )"
   if [[ -n "${spread_lines//[$'\t\r\n ']}" ]]; then
-    forecast_section="Model spread (next 3 days, max high temp across models):
+    forecast_section="Model spread (next 3 days, max high temp across models, °F):
 ${spread_lines}
 
-By model (first forecast day):
+By model (first forecast day, °F / mph):
 ${detail_lines}"
   else
     forecast_section="${detail_lines}"
@@ -544,7 +544,7 @@ fi
 
 if [[ "$DESK" == "weather" && -n "$forecast_section" ]]; then
   body+="
-FORECAST MODELS (ECMWF / GFS / NAM)
+FORECAST MODELS (ECMWF / GFS / NAM, °F / mph)
 ${forecast_section}
 "
 fi

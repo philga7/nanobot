@@ -28,7 +28,8 @@ else
   cities_json='[{"name":"Jefferson, GA","lat":34.12,"lon":-83.58},{"name":"Dahlonega, GA","lat":34.53,"lon":-83.98},{"name":"Statesboro, GA","lat":32.45,"lon":-81.78}]'
 fi
 
-daily_params="daily=temperature_2m_max,temperature_2m_min,precipitation_probability_mean,wind_speed_10m_max&forecast_days=4"
+# Imperial for US weather desk (Open-Meteo: °F and mph).
+daily_params="daily=temperature_2m_max,temperature_2m_min,precipitation_probability_mean,wind_speed_10m_max&forecast_days=4&temperature_unit=fahrenheit&wind_speed_unit=mph"
 
 model_id() {
   case "$1" in

@@ -140,7 +140,7 @@ Each script returns structured JSON to stdout.
 | # | Source | Script | Notes |
 |---|--------|--------|------|
 | 30 | Gold API (XAU/XAG) | `gold_api.sh` | Free JSON at `api.gold-api.com/price/{XAU,XAG}`; daily % move vs first fetch of UTC day |
-| 31 | Forecast models | `forecast_models.sh` | Open-Meteo ECMWF + GFS + NAM CONUS; cities via `OSINT_FORECAST_CITIES_JSON` |
+| 31 | Forecast models | `forecast_models.sh` | Open-Meteo ECMWF + GFS + NAM CONUS (°F / mph); cities via `OSINT_FORECAST_CITIES_JSON` |
 
 ## API Keys (Environment Variables)
 
