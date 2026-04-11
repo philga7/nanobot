@@ -11,6 +11,7 @@ INTEL_SOURCES_CFG="${INTEL_DIR}/config/sources.json"
 
 FORCE=false
 DRY_RUN=false
+JSON_OUT=""
 TEMPLATE="${OSINT_BRIEFING_TEMPLATE:-intelSignal}"
 CHANNEL_ID="${OSINT_BRIEFING_SLACK_CHANNEL_ID:-C0AGWCQ1ZDE}"
 DESK="${OSINT_DESK:-intel}"
@@ -20,6 +21,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --force) FORCE=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --json)
+      JSON_OUT="${2:-}"
+      if [[ -z "$JSON_OUT" ]]; then
+        echo "deliver.sh: --json requires a filepath" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
     --desk)
       DESK="${2:-intel}"
       shift 2
@@ -39,6 +48,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "$JSON_OUT" && "$DRY_RUN" == "true" ]]; then
+  echo "deliver.sh: use either --json or --dry-run, not both" >&2
+  exit 1
+fi
 
 # Load optional env file for OSINT and delivery credentials.
 if [[ -f "$DEFAULT_ENV" ]]; then
@@ -137,10 +151,11 @@ if normalized="$(
             tier: ($feed.tier // .tier),
             category: ($feed.category // .category),
             feed: ($feed.feed // .feed),
-            published: (.published // .pub_date // .pubDate // .date)
+            published: (.published // .pub_date // .pubDate // .date),
+            url: (.url // .link // "")
           })
         elif type == "object" then
-          .
+          . + {url: (.url // .link // "")}
         else
           empty
         end
@@ -148,18 +163,35 @@ if normalized="$(
     | .twitter = [
       (.twitter // [])[]
       | if (type == "object") and has("accounts") and (.accounts | type == "object") then
-          (.accounts | to_entries[] | .value as $acct | ($acct.items // [])[] | . + {
+          (.accounts | to_entries[] | .value as $acct | ($acct.items // [])[]
+          | (.text // .content // "") as $rawt
+          | (($rawt | tostring | [scan("https?://[^\\s\"<>]+")] | .[0] // "")) as $extracted
+          | . + {
             handle: ((.handle // $acct.handle // "unknown") | tostring | ltrimstr("@")),
-            text: clean_tweet(.text // .content // ""),
+            text: clean_tweet($rawt),
             source: ($acct.source // .source),
             tier: ($acct.tier // .tier),
             category: ($acct.category // .category),
-            created_at: (.created_at // $acct.created_at // .date)
+            created_at: (.created_at // $acct.created_at // .date),
+            url: (
+              if $extracted != "" then $extracted
+              elif (.url // "") != "" then .url
+              elif (.id // null) != null and ((.id | tostring) != "") then "https://x.com/i/web/status/" + (.id | tostring)
+              else "" end
+            )
           })
         elif type == "object" then
-          . + {
+          (.text // .content // "") as $rawt
+          | (($rawt | tostring | [scan("https?://[^\\s\"<>]+")] | .[0] // "")) as $extracted
+          | . + {
             handle: ((.handle // .user // .screen_name // "unknown") | tostring | ltrimstr("@")),
-            text: clean_tweet(.text // .content // "")
+            text: clean_tweet($rawt),
+            url: (
+              if $extracted != "" then $extracted
+              elif (.url // "") != "" then .url
+              elif (.id // null) != null and ((.id | tostring) != "") then "https://x.com/i/web/status/" + (.id | tostring)
+              else "" end
+            )
           }
         else
           empty
@@ -205,6 +237,50 @@ if [[ "$rss_filter_active" == "yes" ]] || [[ "$twitter_filter_active" == "yes" ]
       | .meta = ((.meta // {}) * {rss_items: (.rss | length), twitter_items: (.twitter | length)})
     ' 2>/dev/null || echo "$brief_json"
   )"
+fi
+
+# Optional: drop RSS/Twitter rows matching ignored_topic_phrases (plain text, case-insensitive)
+ignored_phrases_json="[]"
+if [[ -f "$INTEL_TOPICS" ]] && command -v jq >/dev/null 2>&1; then
+  ignored_phrases_json="$(
+    jq -c '(.ignored_topic_phrases // []) | map(tostring)' "$INTEL_TOPICS" 2>/dev/null || echo '[]'
+  )"
+fi
+if [[ -n "$ignored_phrases_json" && "$ignored_phrases_json" != "[]" ]]; then
+  brief_json="$(
+    echo "$brief_json" | jq -c --argjson phrases "$ignored_phrases_json" '
+      ($phrases | map(ascii_downcase)) as $ph
+      | if ($ph | length) == 0 then .
+        else
+          .rss |= map(
+            . as $r
+            | (
+                (($r.title // "") + " " + ($r.headline // "") + " " + ($r.description // "") + " " + ($r.summary // ""))
+                | ascii_downcase
+              ) as $b
+            | select(any($ph[]?; $b | contains(.)) | not)
+          )
+          | .twitter |= map(
+            . as $t
+            | (($t.text // $t.content // "") | ascii_downcase) as $b
+            | select(any($ph[]?; $b | contains(.)) | not)
+          )
+          | .meta = ((.meta // {}) * {rss_items: (.rss | length), twitter_items: (.twitter | length)})
+        end
+    ' 2>/dev/null || echo "$brief_json"
+  )"
+fi
+
+# Raw JSON for agent-synthesized briefs (no jq report, Slack, or ntfy)
+if [[ -n "$JSON_OUT" ]]; then
+  out_dir="$(dirname "$JSON_OUT")"
+  mkdir -p "$out_dir"
+  if ! printf '%s' "$brief_json" | jq -c . >"$JSON_OUT"; then
+    echo "deliver.sh: failed to write valid JSON to ${JSON_OUT}" >&2
+    exit 1
+  fi
+  printf '%s\n' "$JSON_OUT"
+  exit 0
 fi
 
 timestamp="$(echo "$brief_json" | jq -r '.briefing_timestamp // .meta.generated_at // "unknown"')"

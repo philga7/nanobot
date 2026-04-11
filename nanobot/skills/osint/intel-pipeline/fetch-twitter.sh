@@ -128,19 +128,29 @@ def main() -> None:
             continue
         lines = block.split("\n")
         text_lines: list[str] = []
+        link = ""
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             if line.startswith("VIDEO:") or line.startswith("PHOTO:") or line.startswith("QT:"):
                 continue
+            m_url = re.match(r"^url:\s*(\S+)", line, re.I)
+            if m_url:
+                link = m_url.group(1).strip()
+                continue
             if re.match(r"^https?://", line):
+                if not link:
+                    link = line
                 continue
             if re.match(r"^\w{3} \w{3} \d{1,2}", line) and len(line) < 40:
                 continue
             text_lines.append(line)
         if text_lines:
-            items.append({"text": " ".join(text_lines)[:500], "handle": clean_handle})
+            item: dict = {"text": " ".join(text_lines)[:500], "handle": clean_handle}
+            if link:
+                item["url"] = link
+            items.append(item)
         if len(items) >= 15:
             break
 
