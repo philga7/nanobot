@@ -1,0 +1,92 @@
+{
+  "desks": {
+    "intel": {
+      "channel": "C0AGWCQ1ZDE",
+      "schedule": "0 7,18 * * *",
+      "tz": "America/New_York",
+      "sources": {
+        "api": [
+          "cisa_kev",
+          "ofac",
+          "opensanctions",
+          "gdelt",
+          "bluesky",
+          "telegram",
+          "acled"
+        ],
+        "rss": [
+          "times-of-israel",
+          "jfeed",
+          "defense-one",
+          "the-drive-warzone",
+          "breaking-defense",
+          "citizen-free-press",
+          "scotusblog",
+          "al-monitor",
+          "the-diplomat",
+          "war-on-the-rocks",
+          "brookings",
+          "csis",
+          "cfr",
+          "white-house",
+          "dod-news",
+          "krebs"
+        ],
+        "twitter": [
+          "mario-nawfal",
+          "chad-pergram",
+          "raws-alerts",
+          "mossadil",
+          "leading-report",
+          "the-information"
+        ]
+      },
+      "topic_weights": "priority_topics",
+      "geo_filter": null
+    },
+    "investing": {
+      "channel": "C0AG5NSKVCL",
+      "schedule": "0 7 * * 1-5",
+      "tz": "America/New_York",
+      "sources": {
+        "api": ["yfinance", "fred", "treasury", "eia", "bls", "gscpi", "gold-api"],
+        "rss": ["federal-reserve", "sec"],
+        "twitter": []
+      },
+      "topic_weights": null,
+      "geo_filter": null,
+      "precious_metals": {
+        "source": "https://api.gold-api.com",
+        "track": ["gold", "silver"],
+        "alert_threshold_pct": 5.0
+      },
+      "mortgage_rates": true
+    },
+    "weather": {
+      "channel": "C0AGWC921TJ",
+      "schedule": "0 6,16 * * *",
+      "tz": "America/New_York",
+      "sources": {
+        "api": ["noaa", "firms", "safecast", "forecast_models"],
+        "rss": [],
+        "twitter": []
+      },
+      "topic_weights": null,
+      "geo_filter": {
+        "states": ["GA", "SC", "NC", "TN", "FL", "AL"],
+        "counties": [
+          "Jackson County GA",
+          "Hall County GA",
+          "Barrow County GA",
+          "Gwinnett County GA",
+          "Lumpkin County GA",
+          "Bulloch County GA"
+        ],
+        "cities": ["Jefferson, GA", "Dahlonega, GA", "Statesboro, GA"],
+        "radius_miles": 100,
+        "center": ["34.12", "-83.58"]
+      },
+      "forecast_models": ["GFS", "NAM", "ECMWF"]
+    }
+  }
+}

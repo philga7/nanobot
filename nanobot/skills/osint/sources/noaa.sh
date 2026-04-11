@@ -29,20 +29,37 @@ raw=$(curl -sf --max-time 10 \
   exit 0
 }
 
-result=$(echo "$raw" | jq -c --arg ts "$ts" '{
-  source: "noaa",
-  fetched_at: $ts,
-  count: (.features // [] | length),
-  alerts: [(.features // [])[:15][] | {
-    headline: .properties.headline,
-    severity: .properties.severity,
-    event: .properties.event,
-    area: .properties.areaDesc,
-    onset: .properties.onset,
-    expires: .properties.expires,
-    status: .properties.status
-  }]
-}' 2>/dev/null) || {
+result=$(echo "$raw" | jq -c --arg ts "$ts" '
+  def ring_centroid(ring):
+    (ring | map(select(length >= 2)) | . as $r
+    | if ($r | length) == 0 then [null, null]
+      else
+        [ ($r | map(.[0]) | add / ($r | length)),
+          ($r | map(.[1]) | add / ($r | length)) ]
+      end);
+  def geom_centroid($g):
+    if $g == null or ($g | type) != "object" then [null, null]
+    elif $g.type == "Point" then [$g.coordinates[0], $g.coordinates[1]]
+    elif $g.type == "Polygon" then ring_centroid($g.coordinates[0])
+    elif $g.type == "MultiPolygon" then ring_centroid($g.coordinates[0][0])
+    else [null, null] end;
+  {
+    source: "noaa",
+    fetched_at: $ts,
+    count: (.features // [] | length),
+    alerts: [(.features // [])[:15][] | geom_centroid(.geometry) as $c | {
+      headline: .properties.headline,
+      severity: .properties.severity,
+      event: .properties.event,
+      area: .properties.areaDesc,
+      onset: .properties.onset,
+      expires: .properties.expires,
+      status: .properties.status,
+      centroid_lon: $c[0],
+      centroid_lat: $c[1]
+    }]
+  }
+' 2>/dev/null) || {
   result="{\"source\":\"${SOURCE}\",\"error\":\"JSON parse failed\",\"fetched_at\":\"${ts}\"}"
   echo "$result" | tee "$CACHE_FILE"
   exit 0

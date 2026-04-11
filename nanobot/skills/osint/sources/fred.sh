@@ -28,7 +28,7 @@ if [[ -z "$KEY" ]]; then
 fi
 
 BASE="https://api.stlouisfed.org/fred/series/observations"
-series_ids=("DFF" "CPIAUCSL" "UNRATE" "T10Y2Y" "VIXCLS")
+series_ids=("DFF" "CPIAUCSL" "UNRATE" "T10Y2Y" "VIXCLS" "MORTGAGE30US" "MORTGAGE15US")
 series_json="{"
 
 for i in "${!series_ids[@]}"; do

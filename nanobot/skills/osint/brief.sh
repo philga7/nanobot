@@ -5,8 +5,11 @@
 #   Layer 2: RSS feeds    (~/.wrenvps/intel/sources/fetch-rss.sh)
 #   Layer 3: Twitter/X   (~/.wrenvps/intel/sources/fetch-twitter.sh via bird-api)
 #
-# Usage: bash brief.sh [--force]
+# Usage: bash brief.sh [--force] [--desk NAME]
 #   --force  Force-refresh all sources before briefing
+#   --desk   Desk id from topics.json → desks.<id> (default: intel). When desks
+#            are configured, only that desk's API sources are refreshed and
+#            only its RSS/Twitter slugs are included in the JSON output.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -33,20 +36,76 @@ if [[ -f "$OSINT_ENV" ]]; then
   set +a
 fi
 
-FLAG="${1:-}"
+FLAG=""
+DESK="${OSINT_DESK:-intel}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force)
+      FLAG="--force"
+      shift
+      ;;
+    --desk)
+      DESK="${2:-intel}"
+      shift 2
+      ;;
+    *)
+      echo "brief.sh: unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+desk_api_json="[]"
+desk_rss_json="[]"
+desk_tw_json="[]"
+desk_json="{}"
+desk_api_len=0
+
+if [[ -f "$INTEL_TOPICS" ]] && command -v jq >/dev/null 2>&1; then
+  if jq -e --arg d "$DESK" '.desks != null and (.desks | has($d))' "$INTEL_TOPICS" >/dev/null 2>&1; then
+    desk_json="$(jq -c --arg d "$DESK" '.desks[$d]' "$INTEL_TOPICS" 2>/dev/null || echo "{}")"
+    desk_api_json="$(echo "$desk_json" | jq -c '(.sources.api // []) | map(ascii_downcase | gsub("-"; "_"))' 2>/dev/null || echo "[]")"
+    desk_rss_json="$(echo "$desk_json" | jq -c '(.sources.rss // []) | map(ascii_downcase)' 2>/dev/null || echo "[]")"
+    desk_tw_json="$(echo "$desk_json" | jq -c '(.sources.twitter // []) | map(ascii_downcase)' 2>/dev/null || echo "[]")"
+    desk_api_len="$(echo "$desk_api_json" | jq 'length' 2>/dev/null || echo 0)"
+  fi
+fi
+
+# Weather desk: center Safecast queries on geo_filter center
+if [[ "$DESK" == "weather" ]] && [[ "$(echo "$desk_json" | jq 'has("geo_filter")')" == "true" ]]; then
+  c_lat="$(echo "$desk_json" | jq -r '.geo_filter.center[0] // empty')"
+  c_lon="$(echo "$desk_json" | jq -r '.geo_filter.center[1] // empty')"
+  if [[ -n "$c_lat" && -n "$c_lon" ]]; then
+    export OSINT_SAFECAST_LAT="$c_lat"
+    export OSINT_SAFECAST_LON="$c_lon"
+  fi
+fi
+
 TIMEOUT=15
 MAX_PARALLEL=10
 CACHE_MAX_AGE=900  # 15 minutes
 
 # ---------------------------------------------------------------------------
-# Phase 1: API layer — refresh stale OSINT sources
+# Phase 1: API layer — refresh stale OSINT sources (optionally desk-filtered)
 # ---------------------------------------------------------------------------
 stale=()
 fresh=()
 
+api_in_desk() {
+  local base="$1"
+  local aid
+  aid="$(echo "$base" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
+  if (( desk_api_len == 0 )); then
+    return 0
+  fi
+  echo "$desk_api_json" | jq -e --arg a "$aid" 'index($a) != null' >/dev/null 2>&1
+}
+
 for script in "${SOURCES_DIR}"/*.sh; do
   [[ -x "$script" ]] || continue
   name="$(basename "$script" .sh)"
+  api_in_desk "$name" || continue
+
   cache_file="${CACHE_DIR}/${name}.json"
 
   if [[ "$FLAG" == "--force" ]]; then
@@ -63,12 +122,11 @@ for script in "${SOURCES_DIR}"/*.sh; do
   fi
 done
 
-echo "Brief: ${#fresh[@]} API sources cached, ${#stale[@]} stale — refreshing stale sources..." >&2
+echo "Brief: desk=${DESK} — ${#fresh[@]} API sources cached, ${#stale[@]} stale — refreshing stale sources..." >&2
 
 if [[ ${#stale[@]} -gt 0 ]]; then
   pids=()
   for script in "${stale[@]}"; do
-    name="$(basename "$script" .sh)"
     (
       timeout "$TIMEOUT" bash "$script" --force > /dev/null 2>&1 || true
     ) &
@@ -102,7 +160,6 @@ if [[ "$intel_available" == "true" ]]; then
     echo "Brief: running intel pipeline fetch-all.sh..." >&2
     timeout 60 bash "$INTEL_FETCH_ALL" $intel_force_flag > /dev/null 2>&1 || true
   elif [[ -x "$INTEL_FETCH_RSS" || -x "$INTEL_FETCH_TWITTER" ]]; then
-    # Run individual layers if fetch-all.sh not present
     rss_pid=""
     twitter_pid=""
     if [[ -x "$INTEL_FETCH_RSS" ]]; then
@@ -134,7 +191,6 @@ tier_alternative=()
 tier_fringe=()
 
 if [[ -f "$INTEL_TOPICS" ]] && command -v jq >/dev/null 2>&1; then
-  # Extract priority topic keys (array of strings)
   mapfile -t priority_topics < <(
     jq -r '(.priority_topics // {}) | keys[]' "$INTEL_TOPICS" 2>/dev/null || true
   )
@@ -168,8 +224,21 @@ if [[ -d "$INTEL_CACHE_RSS" ]] && command -v jq >/dev/null 2>&1; then
       ' "${rss_json_files[@]}" 2>/dev/null || echo "[]"
     )"
     rss_count="$(echo "$rss_items_json" | jq 'length' 2>/dev/null || echo 0)"
-    echo "Brief: loaded ${rss_count} RSS items" >&2
+    echo "Brief: loaded ${rss_count} RSS items (pre-filter)" >&2
   fi
+fi
+
+desk_rss_len="$(echo "$desk_rss_json" | jq 'length' 2>/dev/null || echo 0)"
+if (( desk_rss_len > 0 )); then
+  rss_items_json="$(
+    echo "$rss_items_json" | jq -c --argjson allow "$desk_rss_json" '
+      def norm: ascii_downcase | gsub("-"; "");
+      map(select(
+        (.feed // .source // .id // "" | tostring | norm) as $f
+        | ($allow | map(norm) | index($f) != null)
+      ))
+    ' 2>/dev/null || echo "[]"
+  )"
 fi
 
 # ---------------------------------------------------------------------------
@@ -188,8 +257,21 @@ if [[ -d "$INTEL_CACHE_TWITTER" ]] && command -v jq >/dev/null 2>&1; then
       ' "${twitter_json_files[@]}" 2>/dev/null || echo "[]"
     )"
     twitter_count="$(echo "$twitter_items_json" | jq 'length' 2>/dev/null || echo 0)"
-    echo "Brief: loaded ${twitter_count} Twitter items" >&2
+    echo "Brief: loaded ${twitter_count} Twitter items (pre-filter)" >&2
   fi
+fi
+
+desk_tw_len="$(echo "$desk_tw_json" | jq 'length' 2>/dev/null || echo 0)"
+if (( desk_tw_len > 0 )); then
+  twitter_items_json="$(
+    echo "$twitter_items_json" | jq -c --argjson allow "$desk_tw_json" '
+      def compact: gsub("-"; "") | gsub("_"; "") | ascii_downcase;
+      map(select(
+        (.handle // .user // .screen_name // "" | tostring | ltrimstr("@") | compact) as $h
+        | ($allow | map(compact) | index($h) != null)
+      ))
+    ' 2>/dev/null || echo "[]"
+  )"
 fi
 
 # ---------------------------------------------------------------------------
@@ -210,12 +292,17 @@ timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 {
   echo '{'
   echo "  \"briefing_timestamp\": \"${timestamp}\","
+  echo "  \"desk\": \"${DESK}\","
   echo '  "sources": {'
 
   first=true
   for cache_file in "${CACHE_DIR}"/*.json; do
     [[ -f "$cache_file" ]] || continue
     name="$(basename "$cache_file" .json)"
+    aid="$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
+    if (( desk_api_len > 0 )); then
+      echo "$desk_api_json" | jq -e --arg a "$aid" 'index($a) != null' >/dev/null 2>&1 || continue
+    fi
 
     if [[ "$first" == "true" ]]; then
       first=false
@@ -234,20 +321,21 @@ timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo ''
   echo '  },'
 
-  # RSS layer
   echo "  \"rss\": ${rss_items_json},"
 
-  # Twitter layer
   echo "  \"twitter\": ${twitter_items_json},"
 
-  # Topic weights (passed through for LLM synthesis)
   echo "  \"topic_weights\": ${topic_weights_json},"
 
-  # Count sources
   source_count=0
   error_count=0
   for cache_file in "${CACHE_DIR}"/*.json; do
     [[ -f "$cache_file" ]] || continue
+    name="$(basename "$cache_file" .json)"
+    aid="$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
+    if (( desk_api_len > 0 )); then
+      echo "$desk_api_json" | jq -e --arg a "$aid" 'index($a) != null' >/dev/null 2>&1 || continue
+    fi
     source_count=$((source_count + 1))
     if jq -e '.error' "$cache_file" > /dev/null 2>&1; then
       error_count=$((error_count + 1))
@@ -257,7 +345,12 @@ timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   rss_item_count="$(echo "$rss_items_json" | jq 'length' 2>/dev/null || echo 0)"
   twitter_item_count="$(echo "$twitter_items_json" | jq 'length' 2>/dev/null || echo 0)"
 
+  desk_filt_bool=false
+  (( desk_api_len > 0 )) && desk_filt_bool=true
+
   echo "  \"meta\": {"
+  echo "    \"desk\": \"${DESK}\","
+  echo "    \"desk_api_filtered\": ${desk_filt_bool},"
   echo "    \"total_api_sources\": ${source_count},"
   echo "    \"total_sources\": ${source_count},"
   echo "    \"sources_with_errors\": ${error_count},"
@@ -270,7 +363,7 @@ timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
 if (( error_count > 0 )); then
-  echo "Brief data ready: ${source_count:-0} API sources, ${rss_item_count:-0} RSS items, ${twitter_item_count:-0} tweets (${error_count} API sources with errors)" >&2
+  echo "Brief data ready: desk=${DESK} ${source_count:-0} API sources, ${rss_item_count:-0} RSS items, ${twitter_item_count:-0} tweets (${error_count} API sources with errors)" >&2
 else
-  echo "Brief data ready: ${source_count:-0} API sources, ${rss_item_count:-0} RSS items, ${twitter_item_count:-0} tweets" >&2
+  echo "Brief data ready: desk=${DESK} ${source_count:-0} API sources, ${rss_item_count:-0} RSS items, ${twitter_item_count:-0} tweets" >&2
 fi

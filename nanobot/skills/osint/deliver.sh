@@ -13,21 +13,31 @@ FORCE=false
 DRY_RUN=false
 TEMPLATE="${OSINT_BRIEFING_TEMPLATE:-intelSignal}"
 CHANNEL_ID="${OSINT_BRIEFING_SLACK_CHANNEL_ID:-C0AGWCQ1ZDE}"
+DESK="${OSINT_DESK:-intel}"
+CHANNEL_OVERRIDE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --force) FORCE=true ;;
-    --dry-run) DRY_RUN=true ;;
+    --force) FORCE=true; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --desk)
+      DESK="${2:-intel}"
+      shift 2
+      ;;
     --template)
       TEMPLATE="${2:-$TEMPLATE}"
-      shift
+      shift 2
       ;;
     --channel-id)
       CHANNEL_ID="${2:-$CHANNEL_ID}"
-      shift
+      CHANNEL_OVERRIDE=true
+      shift 2
+      ;;
+    *)
+      echo "deliver.sh: unknown option: $1" >&2
+      exit 1
       ;;
   esac
-  shift
 done
 
 # Load optional env file for OSINT and delivery credentials.
@@ -38,12 +48,32 @@ if [[ -f "$DEFAULT_ENV" ]]; then
   set +a
 fi
 
+desk_json="{}"
+desk_api_json="[]"
+geo_filter_json="null"
+topic_weights_key=""
+
+if [[ -f "$INTEL_TOPICS" ]] && command -v jq >/dev/null 2>&1; then
+  if jq -e --arg d "$DESK" '.desks != null and (.desks | has($d))' "$INTEL_TOPICS" >/dev/null 2>&1; then
+    desk_json="$(jq -c --arg d "$DESK" '.desks[$d]' "$INTEL_TOPICS" 2>/dev/null || echo "{}")"
+    desk_api_json="$(echo "$desk_json" | jq -c '(.sources.api // []) | map(ascii_downcase | gsub("-"; "_"))' 2>/dev/null || echo "[]")"
+    geo_filter_json="$(echo "$desk_json" | jq -c 'if .geo_filter == null then null else .geo_filter end' 2>/dev/null || echo "null")"
+    topic_weights_key="$(echo "$desk_json" | jq -r 'if .topic_weights == null or .topic_weights == "" then "" else .topic_weights end' 2>/dev/null || echo "")"
+    if [[ "$CHANNEL_OVERRIDE" == "false" ]]; then
+      dc="$(echo "$desk_json" | jq -r '.channel // empty' 2>/dev/null || true)"
+      if [[ -n "$dc" && "$dc" != "null" ]]; then
+        CHANNEL_ID="$dc"
+      fi
+    fi
+  fi
+fi
+
 if [[ ! -x "$BRIEF_SCRIPT" ]]; then
   echo "OSINT deliver: missing executable brief.sh at ${BRIEF_SCRIPT}" >&2
   exit 1
 fi
 
-brief_json="$(bash "$BRIEF_SCRIPT" $([[ "$FORCE" == "true" ]] && echo "--force"))"
+brief_json="$(bash "$BRIEF_SCRIPT" $([[ "$FORCE" == "true" ]] && echo "--force") --desk "$DESK")"
 
 # Normalize nested intel RSS/Twitter shapes (feeds.*.items / accounts.*.items) to flat
 # arrays so downstream jq matches brief.sh output from both layouts.
@@ -139,7 +169,7 @@ rss_items="$(echo "$brief_json" | jq -r '.meta.rss_items // 0')"
 twitter_items="$(echo "$brief_json" | jq -r '.meta.twitter_items // 0')"
 intel_available="$(echo "$brief_json" | jq -r '.meta.intel_pipeline_available // false')"
 
-# --- Source health summary ---
+# --- Source health summary (desk API sources only — matches brief output) ---
 top_errors="$(
   echo "$brief_json" | jq -r '
     (.sources // {})
@@ -151,10 +181,13 @@ top_errors="$(
   ' 2>/dev/null
 )"
 
-# Load topic weights JSON for inline scoring (empty object if unavailable)
+# Load topic weights JSON for inline scoring (empty object if desk skips weighting)
 topic_weights_inline="{}"
-if [[ -f "$INTEL_TOPICS" ]]; then
-  topic_weights_inline="$(jq -c '(.priority_topics // {}) | with_entries(.value |= (. * 10 | floor))' "$INTEL_TOPICS" 2>/dev/null || echo "{}")"
+if [[ -f "$INTEL_TOPICS" ]] && [[ -n "$topic_weights_key" ]]; then
+  topic_weights_inline="$(
+    jq -c --arg k "$topic_weights_key" \
+      '(.[$k] // {}) | with_entries(.value |= (. * 10 | floor))' "$INTEL_TOPICS" 2>/dev/null || echo "{}"
+  )"
 fi
 
 # Load tier maps for inline labeling
@@ -167,12 +200,69 @@ if [[ -f "$INTEL_TOPICS" ]]; then
   tier_fringe_inline="$(jq -c '[(.source_tier_classification.fringe // [])[] | ascii_downcase]' "$INTEL_TOPICS" 2>/dev/null || echo "[]")"
 fi
 
-# --- KEY INDICATORS (Crucix API sources from brief .sources) ---
+# --- KEY INDICATORS + aggregated Data: line ---
 KEY_INDICATORS_JQ="${SCRIPT_DIR}/key-indicators.jq"
 api_section=""
+data_status=""
 if [[ -f "$KEY_INDICATORS_JQ" ]]; then
-  api_section="$(
-    echo "$brief_json" | jq -r -f "$KEY_INDICATORS_JQ" 2>/dev/null || true
+  ki="$(
+    echo "$brief_json" | jq -c -f "$KEY_INDICATORS_JQ" \
+      --argjson desk_api "$desk_api_json" \
+      --argjson geo_filter "$geo_filter_json" 2>/dev/null || echo '{"indicator_lines":[],"data_status":null}'
+  )"
+  api_section="$(echo "$ki" | jq -r '.indicator_lines[]?' 2>/dev/null || true)"
+  data_status="$(echo "$ki" | jq -r '.data_status // empty' 2>/dev/null || true)"
+fi
+
+# --- PRECIOUS METALS (investing desk) ---
+precious_section=""
+if [[ "$DESK" == "investing" ]]; then
+  threshold="$(echo "$desk_json" | jq -c '.precious_metals.alert_threshold_pct // 5.0' 2>/dev/null || echo "5.0")"
+  precious_section="$(
+    echo "$brief_json" | jq -r --argjson th "$threshold" '
+      (.sources.gold_api // null) as $g
+      | if $g == null or ($g.assets // null) == null then empty
+        else
+          ($g.assets // {}) as $a
+          | def fmt($sym; $label):
+              ($a[$sym] // null) as $x
+              | if $x == null or ($x.price == null) then empty
+                else
+                  ($x.change_pct_day // 0) as $pct
+                  | (if $pct < 0 then -$pct else $pct end) as $ab
+                  | (if ($ab >= ($th | tonumber)) then " ALERT" else "" end) as $al
+                  | "\($label) $\($x.price | tostring | sub("\\.[0-9]{3,}$"; "")) ("
+                    + (if $pct >= 0 then "+" else "" end)
+                    + ($pct | tostring | .[0:6]) + "%)\($al)"
+                end;
+          [
+            (fmt("XAU"; "GOLD")),
+            (fmt("XAG"; "SILVER"))
+          ] | map(select(length > 0)) | join(" | ")
+        end
+    ' 2>/dev/null || true
+  )"
+fi
+
+# --- FORECAST MODELS (weather desk) ---
+forecast_section=""
+if [[ "$DESK" == "weather" ]]; then
+  forecast_section="$(
+    echo "$brief_json" | jq -r '
+      (.sources.forecast_models.cities // [])[] | . as $c
+      | ($c.name // "?") as $nm
+      | (
+          ["ECMWF","GFS","NAM"][]
+          | . as $lab
+          | ($c.models[$lab].daily // {}) as $d
+          | ($d.time[0] // "") as $t0
+          | ($d.temperature_2m_max[0] // "?") as $hi
+          | ($d.temperature_2m_min[0] // "?") as $lo
+          | ($d.precipitation_probability_mean[0] // "?") as $pr
+          | ($d.wind_speed_10m_max[0] // "?") as $ws
+          | "• \($nm) [\($lab)] \($t0) Hi \($hi)° Lo \($lo)° | rain \($pr)% | wind \($ws)"
+        )
+    ' 2>/dev/null || true
   )"
 fi
 
@@ -224,7 +314,7 @@ if (( rss_items > 0 )); then
   )"
 fi
 
-# --- Twitter/X section: ranked by topic weight desc, then recency desc, top 10 ---
+# --- Twitter/X section ---
 twitter_section=""
 if (( twitter_items > 0 )); then
   twitter_section="$(
@@ -299,9 +389,9 @@ if (( twitter_items > 0 )); then
   )"
 fi
 
-# --- Georgia desk subsection ---
+# --- Georgia desk subsection (intel desk only) ---
 georgia_rss=""
-if (( rss_items > 0 )); then
+if [[ "$DESK" == "intel" ]] && (( rss_items > 0 )); then
   georgia_rss="$(
     echo "$brief_json" | jq -r '
       (.rss // [])
@@ -319,13 +409,12 @@ if (( rss_items > 0 )); then
   )"
 fi
 
-# --- Topic weight highlights (high-weight matches from RSS/Twitter) ---
-# Build a list of high-weight topics (weight >= 1.3) from topics.json
+# --- Topic weight highlights (intel / weighted desks only) ---
 high_weight_topics=""
-if [[ -f "$INTEL_TOPICS" ]]; then
+if [[ -n "$topic_weights_key" ]] && [[ -f "$INTEL_TOPICS" ]]; then
   high_weight_topics="$(
-    jq -r '
-      (.priority_topics // {})
+    jq -r --arg k "$topic_weights_key" '
+      (.[$k] // {})
       | to_entries
       | map(select(.value >= 1.3))
       | map(.key | ascii_downcase)
@@ -334,9 +423,9 @@ if [[ -f "$INTEL_TOPICS" ]]; then
   )"
 fi
 
-# --- Elevated signal items (matching high-weight topics) ---
+# --- Elevated signal items ---
 elevated_items=""
-if [[ -n "$high_weight_topics" && ( (( rss_items > 0 )) || (( twitter_items > 0 )) ) ]]; then
+if [[ -n "$topic_weights_key" && -n "$high_weight_topics" && ( (( rss_items > 0 )) || (( twitter_items > 0 )) ) ]]; then
   elevated_items="$(
     echo "$brief_json" | jq -r --arg pattern "$high_weight_topics" '
       def matches(t): t | ascii_downcase | test($pattern);
@@ -360,26 +449,50 @@ if [[ -n "$high_weight_topics" && ( (( rss_items > 0 )) || (( twitter_items > 0 
   )"
 fi
 
-# --- Assemble title ---
+# --- Title / template ---
 case "$TEMPLATE" in
   breakingBullet)
     title=":rotating_light: BREAKING BULLET | OSINT Brief"
     ;;
   *)
-    title=":satellite: INTEL SIGNAL | OSINT Brief"
+    case "$DESK" in
+      investing)
+        title=":chart_with_upwards_trend: INVESTING DESK | OSINT Brief"
+        ;;
+      weather)
+        title=":cloud: WEATHER DESK | OSINT Brief"
+        ;;
+      *)
+        title=":satellite: INTEL SIGNAL | OSINT Brief"
+        ;;
+    esac
     ;;
 esac
 
 # --- Compose body ---
 body="${title}
 Time (UTC): ${timestamp}
-Coverage: ${total_sources} API sources | ${rss_items} RSS items | ${twitter_items} tweets (${errors} degraded/error)
+Desk: ${DESK} — Coverage: ${total_sources} API sources | ${rss_items} RSS items | ${twitter_items} tweets (${errors} degraded/error)
 "
 
 if [[ -n "$api_section" ]]; then
   body+="
 KEY INDICATORS
 ${api_section}
+"
+fi
+
+if [[ "$DESK" == "investing" && -n "$precious_section" ]]; then
+  body+="
+PRECIOUS METALS
+• ${precious_section}
+"
+fi
+
+if [[ "$DESK" == "weather" && -n "$forecast_section" ]]; then
+  body+="
+FORECAST MODELS (ECMWF / GFS / NAM)
+${forecast_section}
 "
 fi
 
@@ -416,6 +529,12 @@ Source health (API):
 ${top_errors}
 "
 
+if [[ -n "$data_status" ]]; then
+  body+="
+${data_status}
+"
+fi
+
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "$body"
   exit 0
@@ -451,4 +570,4 @@ if [[ -n "${NTFY_URL:-}" && -n "${NTFY_TOPIC:-}" ]]; then
     "$ntfy_target" >/dev/null || true
 fi
 
-echo "OSINT deliver: posted using template=${TEMPLATE} channel=${CHANNEL_ID}" >&2
+echo "OSINT deliver: desk=${DESK} template=${TEMPLATE} channel=${CHANNEL_ID}" >&2

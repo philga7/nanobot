@@ -1,9 +1,10 @@
 ---
 name: osint
 description: >-
-  OSINT intelligence briefing. Queries 29 open-source intelligence APIs
+  OSINT intelligence briefing. Queries 30+ open-source intelligence APIs
   (GDELT, FRED, FIRMS, EIA, BLS, CISA, markets, sanctions, conflict, weather,
-  maritime, social, NASA missions) plus RSS feeds and Twitter/X signals from the
+  maritime, social, NASA missions, precious metals, multi-model forecasts) plus
+  RSS feeds and Twitter/X signals from the
   intel pipeline, caches results for 15 minutes, and synthesizes a
   leverage-first 9-section briefing with cross-source correlation and narrative
   tracking. Trigger with "brief me", "intel brief", "osint brief", "what's
@@ -32,7 +33,7 @@ The briefing pulls from three parallel data layers:
 
 | Layer | Source | Config |
 |-------|--------|--------|
-| **API** | 29 scripts in `sources/` | API keys in `~/.wrenvps/osint/.env` |
+| **API** | 30+ scripts in `sources/` | API keys in `~/.wrenvps/osint/.env` |
 | **RSS** | 20+ RSS feeds (SCOTUSblog, Times of Israel, CSIS, Brookings, Defense One, War on the Rocks, AJC, GPB, etc.) | `~/.wrenvps/intel/config/sources.json` |
 | **Twitter/X** | 11 accounts via bird-api (Mario Nawfal, Chad Pergram, RawsAlerts, Mossad_il, Leading Report, etc.) | `~/.wrenvps/intel/config/sources.json` |
 
@@ -42,6 +43,37 @@ Layer orchestration:
 - Twitter cache: `~/.wrenvps/intel/cache/twitter/`
 - If bird-api is down, Twitter layer returns empty and briefing continues
 - If RSS feeds fail, available feeds are used; briefing is never blocked
+
+## Three-desk reports
+
+Desk routing splits one mega-brief into **intel**, **investing**, and **weather** reports. Each desk has its own Slack channel, cron schedule, API allowlist, RSS/Twitter slugs, optional geo filter, and optional topic-weight key.
+
+Merge the example `desks` object into `~/.wrenvps/intel/config/topics.json` (alongside `priority_topics` and `source_tier_classification`). Copy from the repo:
+
+`nanobot/skills/osint/topics.desks.example.json`
+
+| Desk | Default role | Topic weights | Extra sections |
+|------|----------------|---------------|----------------|
+| **intel** | Geopolitics, sanctions, social signals | `topic_weights`: `"priority_topics"` | ELEVATED, RSS, Twitter/X, GEORGIA DESK |
+| **investing** | Markets, macro, energy, labor | `null` (no weighted ranking) | PRECIOUS METALS (gold/silver + daily % vs desk open), mortgage series via FRED |
+| **weather** | Local hazards + models | `null` | `geo_filter` on NOAA/FIRMS/Safecast; FORECAST MODELS (ECMWF / GFS / NAM via Open-Meteo) |
+
+**API ids** in `sources.api` use underscores (`cisa_kev`, `gold_api`). Hyphenated names like `gold-api` are normalized to `gold_api` when matching scripts.
+
+**RSS / Twitter** lists use feed slugs and handle slugs (hyphens allowed). Matching ignores hyphens/underscores and case.
+
+**Geo filter** (weather): `states`, `counties`, `radius_miles`, and `center` `[lat,lon]`. NOAA alerts match state/county text or alert centroid within the radius. FIRMS and Safecast points are filtered by radius.
+
+**Adding a desk:** copy a block under `desks`, set `channel`, `schedule` (for your own crons), `tz`, `sources`, `topic_weights` (string key into `topics.json` or `null`), and optional `geo_filter` / `precious_metals` / `forecast_models`.
+
+**Commands:**
+
+```bash
+bash brief.sh --desk weather --force
+bash deliver.sh --desk investing --dry-run
+```
+
+Default if `--desk` is omitted: **`intel`** (same as pre-desk behavior when `desks` is absent: all API caches, all RSS/Twitter items).
 
 ## Topic Weighting
 
@@ -55,7 +87,7 @@ Priority topics are read from `~/.wrenvps/intel/config/topics.json`:
 
 When RSS items contain Georgia-relevant content (AJC, GPB, keywords: Georgia, Atlanta, Kemp, Warnock), a **GEORGIA DESK** subsection is included in the briefing.
 
-## Sources (29 Total — API Layer)
+## Sources (API Layer)
 
 Sources are queried directly via shell scripts in the `sources/` directory.
 Each script returns structured JSON to stdout.
@@ -102,6 +134,13 @@ Each script returns structured JSON to stdout.
 ### Patents (bonus)
 
 | 29 | USPTO Patents | `patents.sh` | Tech patents |
+
+### Desk-oriented additions
+
+| # | Source | Script | Notes |
+|---|--------|--------|------|
+| 30 | Gold API (XAU/XAG) | `gold_api.sh` | Free JSON at `api.gold-api.com/price/{XAU,XAG}`; daily % move vs first fetch of UTC day |
+| 31 | Forecast models | `forecast_models.sh` | Open-Meteo ECMWF + GFS + NAM CONUS; cities via `OSINT_FORECAST_CITIES_JSON` |
 
 ## API Keys (Environment Variables)
 
@@ -154,12 +193,13 @@ To produce a briefing, run the orchestrator:
 
 ```bash
 bash /path/to/skills/osint/brief.sh
+bash /path/to/skills/osint/brief.sh --desk investing --force
 ```
 
 This will:
-1. Check all source caches for freshness
+1. Check all source caches for freshness (only desks’ API scripts when `desks` is configured)
 2. Fetch stale sources in parallel (15s timeout)
-3. Combine cached data into a single JSON payload
+3. Combine cached data into a single JSON payload (desk-filtered `.sources`, RSS, Twitter)
 4. Output combined intelligence data for synthesis
 
 To refresh all caches without producing a brief:
@@ -178,9 +218,10 @@ bash /path/to/skills/osint/deliver.sh --force
 
 Supported flags:
 
+- `--desk intel|investing|weather` selects desk config (default **`intel`**)
 - `--dry-run` prints the outgoing message without posting
 - `--template intelSignal|breakingBullet` chooses briefing style
-- `--channel-id C0AGWCQ1ZDE` overrides Slack target channel id
+- `--channel-id C0AGWCQ1ZDE` overrides Slack target channel id (overrides desk `channel` when set)
 
 Expected env vars:
 
@@ -191,7 +232,7 @@ Expected env vars:
 
 ## Cron Setup (Full Ops)
 
-Install twice-daily OSINT delivery jobs into workspace cron store:
+Install three per-desk delivery jobs into the workspace cron store:
 
 ```bash
 # preview only
@@ -201,10 +242,19 @@ python /path/to/skills/osint/install_cron.py
 python /path/to/skills/osint/install_cron.py --apply
 ```
 
+Jobs (America/New_York by default):
+
+| Job | Default cron | Command |
+|-----|----------------|---------|
+| `osint-intel` | `0 7,18 * * *` | `deliver.sh --desk intel` |
+| `osint-investing` | `0 7 * * 1-5` | `deliver.sh --desk investing` |
+| `osint-weather` | `0 6,16 * * *` | `deliver.sh --desk weather` |
+
 Environment overrides:
 
-- `OSINT_BRIEFING_CRON_MORNING` (default `0 7 * * *`)
-- `OSINT_BRIEFING_CRON_EVENING` (default `0 18 * * *`)
+- `OSINT_BRIEFING_CRON_INTEL` (default `0 7,18 * * *`)
+- `OSINT_BRIEFING_CRON_INVESTING` (default `0 7 * * 1-5`)
+- `OSINT_BRIEFING_CRON_WEATHER` (default `0 6,16 * * *`)
 - `NANOBOT_AGENTS__DEFAULTS__WORKSPACE` (default `~/.wrenvps/workspace`)
 
 ## Unified Intel Pipeline
