@@ -4,6 +4,17 @@
 
 nanobot is a lightweight personal AI assistant framework written in Python 3.11+.
 
+## Fork context (this repo)
+
+This workspace is **[philga7/nanobot](https://github.com/philga7/nanobot)**, a fork of **[HKUDS/nanobot](https://github.com/HKUDS/nanobot)**. `upstream` should point at HKUDS; merge or rebase `upstream/main` into this fork’s `main` when you want upstream fixes and features (see [docs/WREN_UPDATE_WORKFLOW.md](docs/WREN_UPDATE_WORKFLOW.md) for a full rollout checklist).
+
+**Fork-specific areas** (treat as first-class when changing behavior or docs):
+
+- **`nanobot/skills/osint/`** — shell-driven OSINT briefing (`brief.sh`, `deliver.sh`, `sources/`), desk routing (intel / investing / weather), JSON handoff for agent-written Slack briefs.
+- **Instance examples** — `config.wrenair.example.json`, `config.wrenvps.example.json`, `config.wrenpro.example.json` plus [INSTANCES.md](INSTANCES.md).
+- **Compose overlays** — `docker-compose.wrenair.yml`, `docker-compose.wrenvps.yml`, `docker-compose.wrenpro.yml`, [DOCKER.md](DOCKER.md), and `deploy/news-stack/` where relevant.
+- **Operator docs** — [docs/WREN_UPDATE_WORKFLOW.md](docs/WREN_UPDATE_WORKFLOW.md), [docs/NEWS_STACK_ENV_REFERENCE.md](docs/NEWS_STACK_ENV_REFERENCE.md).
+
 ## Tech Stack
 
 - **Runtime**: Python 3.11+
@@ -45,7 +56,7 @@ nanobot/
 ├── providers/      # LLM provider implementations
 ├── security/       # Security utilities
 ├── session/        # Session management
-├── skills/         # Agent skills
+├── skills/         # Agent skills (includes fork OSINT briefing under skills/osint/)
 ├── templates/      # Message/prompt templates
 └── utils/          # General utilities
 ```
