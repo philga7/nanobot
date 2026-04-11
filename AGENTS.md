@@ -6,7 +6,7 @@ nanobot is a lightweight personal AI assistant framework written in Python 3.11+
 
 ## Fork context (this repo)
 
-This workspace is **[philga7/nanobot](https://github.com/philga7/nanobot)**, a **community fork** of **[HKUDS/nanobot](https://github.com/HKUDS/nanobot)**. It is not affiliated with upstream; coordinate **upstream-bound** changes with HKUDS when appropriate.
+This workspace is **[philga7/nanobot](https://github.com/philga7/nanobot)** — a **personal fork** of **[HKUDS/nanobot](https://github.com/HKUDS/nanobot)** with **maintainer-specific** customizations (OSINT skill, deployment docs, cron integration, etc.). It is not the upstream project.
 
 Configure git **`upstream`** to HKUDS and merge or rebase **`upstream/main`** into this fork’s **`main`** to pick up upstream fixes and features. For a detailed multi-host rollout checklist, see [docs/WREN_UPDATE_WORKFLOW.md](docs/WREN_UPDATE_WORKFLOW.md).
 
