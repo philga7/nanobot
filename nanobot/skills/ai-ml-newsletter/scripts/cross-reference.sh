@@ -232,20 +232,76 @@ def app_osint_relevance(name: str, desc: str, category: str) -> str:
     return "low"
 
 
-def slack_escape(t: str) -> str:
-    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def slack_sanitize_user_text(s: str) -> str:
+    """Strip characters that break Slack mrkdwn (*bold*, _italic_, links)."""
+    return (s or "").replace("*", "·").replace("`", "ʼ").replace("_", "·").replace("|", "·")
+
+
+def slack_sanitize_link_label(s: str, max_len: int = 72) -> str:
+    s = (s or "link").replace("|", "·").replace("<", "").replace(">", "")
+    s = re.sub(r"\s+", " ", s).strip() or "link"
+    if len(s) > max_len:
+        return s[: max_len - 1] + "…"
+    return s
+
+
+def slack_mrkdwn_link(url: str, label: str) -> str:
+    u = (url or "").strip().rstrip(").,;]")
+    if not u:
+        return ""
+    lab = slack_sanitize_link_label(label, 72)
+    return f"<{u}|{lab}>"
+
+
+def slack_type_link_label(link_type: str) -> str:
+    t = (link_type or "link").replace("_", " ").strip() or "link"
+    return t[:36] + ("…" if len(t) > 36 else "")
+
+
+def slack_linkify_plain_urls(text: str, max_urls: int = 12) -> str:
+    if not text:
+        return ""
+    out: list[str] = []
+    pos = 0
+    n = 0
+    for m in re.finditer(r"https?://[^\s<>\]|]+", text):
+        if m.start() > 0 and text[m.start() - 1] == "<":
+            continue
+        out.append(text[pos : m.start()])
+        if n >= max_urls:
+            out.append(m.group(0))
+            pos = m.end()
+            continue
+        raw_u = m.group(0).rstrip(").,;]")
+        host = urlparse(raw_u).netloc or "link"
+        out.append(slack_mrkdwn_link(raw_u, host))
+        pos = m.end()
+        n += 1
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def md_to_slack(s: str) -> str:
+    if not s:
+        return ""
+
+    def _md_link(m: re.Match[str]) -> str:
+        return slack_mrkdwn_link(m.group(2), m.group(1))
+
+    s = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", _md_link, s)
     s = re.sub(r"\*\*([^*]+)\*\*", r"*\1*", s)
     return s
 
 
+def slack_section_divider() -> str:
+    return "· · · · · · · · · ·"
+
+
 def build_slack_digest(date: str, merged_stories: list[dict], apps: list[dict]) -> str:
     lines: list[str] = [
-        md_to_slack(f"🤖 *AI/ML Daily Digest* — {date}"),
+        f"🤖 *AI/ML Daily Digest* — {date}",
         "",
-        md_to_slack(f"📰 *TOP STORIES* ({len(merged_stories)} items)"),
+        f"📰 *TOP STORIES* ({len(merged_stories)} items)",
         "",
     ]
     merged_stories = sorted(
@@ -254,57 +310,73 @@ def build_slack_digest(date: str, merged_stories: list[dict], apps: list[dict]) 
     )
     for i, st in enumerate(merged_stories[:35], 1):
         cc = st.get("coverage_count", 1)
-        hl = st.get("headline", "")
-        summ = st.get("summary", "")
+        hl = slack_sanitize_user_text(st.get("headline", ""))
+        summ = (st.get("summary") or "").strip()
+        summ = re.sub(r"\s+", " ", summ)[:750]
         srcs = st.get("sources") or []
-        names = ", ".join(s.get("newsletter", "") for s in srcs if s.get("newsletter"))
+        names = ", ".join(
+            slack_sanitize_user_text(s.get("newsletter", "") or "")
+            for s in srcs
+            if s.get("newsletter")
+        )
         woven = summ
         for s in srcs[:3]:
-            lk = s.get("link")
-            nn = s.get("newsletter", "")
-            if lk and nn and lk not in woven:
-                woven += f" _See also ({nn}):_ {lk}"
+            lk = (s.get("link") or "").strip()
+            nn = slack_sanitize_user_text(s.get("newsletter", "") or "")
+            if lk and nn:
+                tag = slack_mrkdwn_link(lk, nn)
+                if tag not in woven:
+                    woven += f" _See also ({nn}):_ {tag}"
+        woven = md_to_slack(woven)
+        woven = slack_linkify_plain_urls(woven, max_urls=10)
         if cc > 1:
-            lines.append(
-                md_to_slack(f"*{i}. {hl}* [{cc} sources]")
-            )
+            lines.append(f"*{i}. {hl}* · _{cc} sources_")
         else:
-            one = srcs[0].get("newsletter", "newsletter") if srcs else "newsletter"
-            lines.append(md_to_slack(f"*{i}. {hl}* [1 source — {one}]"))
-        lines.append(slack_escape(woven[:900]))
+            one = slack_sanitize_user_text(
+                (srcs[0].get("newsletter") or "newsletter") if srcs else "newsletter"
+            )
+            lines.append(f"*{i}. {hl}* · _1 source — {one}_")
+        lines.append(woven)
         all_links = st.get("links") or []
         if all_links:
-            lines.append(
-                "→ "
-                + " | ".join(
-                    L.get("url", "") for L in all_links[:5] if L.get("url")
-                )
-            )
+            parts = [
+                slack_mrkdwn_link(L.get("url", ""), slack_type_link_label(str(L.get("type") or "link")))
+                for L in all_links[:5]
+                if L.get("url")
+            ]
+            parts = [p for p in parts if p]
+            if parts:
+                lines.append("→ " + " · ".join(parts))
         if cc > 1 and names:
-            lines.append(md_to_slack(f"_Also covered by:_ {names}"))
+            lines.append(f"_Also covered by:_ {names}")
         lines.append("")
 
-    lines.append("---")
+    lines.append(slack_section_divider())
     lines.append("")
-    lines.append(md_to_slack("🔧 *NOTABLE APPS & SITES*"))
+    lines.append("🔧 *NOTABLE APPS & SITES*")
     lines.append("")
     for a in apps[:60]:
-        nm = a.get("name", "")
-        url = a.get("url", "")
-        desc_full = a.get("description", "") or a.get("name", "")
-        lines.append(md_to_slack(f"• *{nm}* — {desc_full}"))
+        nm = slack_sanitize_user_text(a.get("name", "") or "")
+        url = (a.get("url") or "").strip()
+        desc_full = (a.get("description") or "").strip() or (a.get("name") or "")
+        desc_fmt = slack_sanitize_user_text(desc_full)
+        desc_fmt = md_to_slack(desc_fmt)
+        desc_fmt = slack_linkify_plain_urls(desc_fmt, max_urls=4)
+        lines.append(f"• *{nm}* — {desc_fmt}")
         if url:
-            lines.append(f"  → {url}")
+            lines.append(
+                f"  → {slack_mrkdwn_link(url, urlparse(url).netloc or 'link')}"
+            )
     lines.append("")
-    lines.append("---")
+    lines.append(slack_section_divider())
     lines.append("")
-    lines.append(md_to_slack("📊 *COVERAGE MAP*"))
+    lines.append("📊 *COVERAGE MAP*")
     lines.append("")
     for st in merged_stories[:35]:
-        hl = st.get("headline", "")[:80]
+        hl = slack_sanitize_user_text((st.get("headline") or "")[:80])
         srcs = st.get("sources") or []
-        nms = ", ".join(s.get("newsletter", "?") for s in srcs)
-        lines.append(md_to_slack(f"{hl} — covered by {nms}"))
+        nms = ", ".join(slack_sanitize_user_text(s.get("newsletter") or "?") for s in srcs)
+        lines.append(f"• *{hl}* — _{nms}_")
     return "\n".join(lines)
 
 

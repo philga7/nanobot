@@ -60,7 +60,7 @@ Use the **same** `email_creds.json` shape as `dividend-intel` (copy or symlink f
 - Produces merged objects with `sources[]`, `coverage_count`, combined `summary`, and deduped `links`.
 - Updates the append-only **apps/sites** catalog (`times_mentioned`, `first_seen`, `first_seen_in`).
 - Writes `osint_feed.json` with per-item `osint_relevance` heuristics (`high` / `medium` / `low`).
-- Builds Slack mrkdwn (trimmed to ~1500 words), then posts if `NANOBOT_CHANNELS__SLACK__BOT_TOKEN` is set.
+- Builds Slack **mrkdwn** (trimmed to ~1500 words): `*bold*`, `_italic_`, `<https://example.com|label>` links for story URLs, source lines, and apps; plain `https://…` in summaries is linkified the same way. Posts when `NANOBOT_CHANNELS__SLACK__BOT_TOKEN` is set.
 
 ### Environment
 
@@ -77,7 +77,7 @@ Use the **same** `email_creds.json` shape as `dividend-intel` (copy or symlink f
 
 - Uses Slack Web API `chat.postMessage` with JSON body `{channel, text}` (same approach as `nanobot/skills/osint/deliver.sh`).
 - Long digests are split into multiple messages (~3500 characters per chunk).
-- Format: header, **TOP STORIES** (with source counts and woven newsletter links), **NOTABLE APPS & SITES**, **COVERAGE MAP**.
+- Format: header, **TOP STORIES** (source counts, `_See also (Newsletter):_ <url|Newsletter>` lines, per-story `→ <url|type>` link rows), **NOTABLE APPS & SITES** (verbatim description plus `<url|host>` on the next line), **COVERAGE MAP** (bulleted `*headline*` with `_sources_`).
 
 ## OSINT integration
 
