@@ -60,7 +60,7 @@ Use the **same** `email_creds.json` shape as `dividend-intel` (copy or symlink f
 - Produces merged objects with `sources[]`, `coverage_count`, combined `summary`, and deduped `links`.
 - Updates the append-only **apps/sites** catalog (`times_mentioned`, `first_seen`, `first_seen_in`).
 - Writes `osint_feed.json` with per-item `osint_relevance` heuristics (`high` / `medium` / `low`).
-- Builds Slack **mrkdwn** (trimmed to ~1500 words): `*bold*`, `_italic_`, `<https://example.com|label>` links for story URLs, source lines, and apps; plain `https://…` in summaries is linkified the same way.
+- Builds Slack **mrkdwn** (trimmed to ~1500 words): `*bold*`, `_italic_`, `<https://example.com|label>` links for story URLs, source lines, and apps; plain `https://…` in summaries is linkified the same way. Posts when `NANOBOT_CHANNELS__SLACK__BOT_TOKEN` is set.
 
 ### Environment
 
