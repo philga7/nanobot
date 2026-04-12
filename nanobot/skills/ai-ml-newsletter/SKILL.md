@@ -41,8 +41,9 @@ Use the **same** `email_creds.json` shape as `dividend-intel` (copy or symlink f
 - Reads `~/.wrenvps/ai-ml-newsletter/email_creds.json` (`host`, `port`, `username`, `password`, `ssl`).
 - Searches `UNSEEN` only.
 - **Processes** mail if:
-  - `From` is in `AI_ML_SENDERS` (extensible list in the script; includes `theneuron@newsletter.theneurondaily.com`), **or**
+  - `From` is in `AI_ML_SENDERS` (extensible list in the script; includes `theneuron@newsletter.theneurondaily.com`, `swyx@ainews.email`), **or**
   - `Subject` matches AI/ML keywords (`AI`, `ML`, `machine learning`, `GPT`, `LLM`, etc.).
+- **Blocklist:** `BLOCKED_SENDERS` rejects known finance/marketing domains (substring match on the From address) before other checks — e.g. stockanalysis, marketwatch, seekingalpha, morningbrew.
 - **Skips** (leaves unread, no `processed_ids` entry) if the message does not match the above **and** looks dividend/income oriented (shared inbox — avoids fighting `dividend-intel`).
 - Prefers `text/plain`; strips HTML with stdlib `html.parser` when needed.
 - Per-message JSON is merged into `cache/raw/{newsletter_slug}_{date}.json` (same slug + day → append stories / apps / links).
@@ -114,10 +115,10 @@ Use the **same** `email_creds.json` shape as `dividend-intel` (copy or symlink f
 
 ## Cron schedule
 
-Weekdays **6:45 AM Eastern** (before market open, aligned with dividend newsletter ingest timing):
+Daily **6:45 AM Eastern** (seven days a week):
 
 ```text
-45 6 * * 1-5 America/New_York
+45 6 * * * America/New_York
 ```
 
 Example job message (install scripts under `~/.wrenvps/scripts/` or run from checkout):
