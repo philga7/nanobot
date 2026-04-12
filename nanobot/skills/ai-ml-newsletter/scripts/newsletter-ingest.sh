@@ -4,7 +4,7 @@
 # Credentials: ~/.wrenvps/ai-ml-newsletter/email_creds.json
 # Idempotency: ~/.wrenvps/ai-ml-newsletter/processed_ids.json
 #
-# Cron: 45 6 * * 1-5 (America/New_York) — weekdays 6:45 AM ET
+# Cron: 45 6 * * * (America/New_York) — daily 6:45 AM ET
 #
 # Cache: <skill>/cache/raw/{slug}_{date}.json (override with AI_ML_NEWSLETTER_CACHE_RAW)
 
@@ -38,6 +38,17 @@ AI_ML_SENDERS = frozenset(
     s.lower()
     for s in [
         "theneuron@newsletter.theneurondaily.com",
+        "swyx@ainews.email",
+    ]
+)
+
+BLOCKED_SENDERS = frozenset(
+    s.lower()
+    for s in [
+        "stockanalysis",
+        "marketwatch",
+        "seekingalpha",
+        "morningbrew",
     ]
 )
 
@@ -336,8 +347,10 @@ def build_record(
     }
 
 
-def should_process_email(from_email: str, subject: str, body: str) -> bool:
+def is_ai_ml_newsletter(from_email: str, subject: str, body: str) -> bool:
     fe = from_email.lower()
+    if any(b in fe for b in BLOCKED_SENDERS):
+        return False
     if fe in AI_ML_SENDERS:
         return True
     if SUBJECT_AI_KEYWORDS.search(subject or ""):
@@ -456,7 +469,7 @@ try:
 
             body, _html = get_body_and_html(msg)
 
-            if not should_process_email(from_addr, subject, body):
+            if not is_ai_ml_newsletter(from_addr, subject, body):
                 print(f"  skip {msg_id_str} (not AI/ML newsletter filter): {subject[:50]}", flush=True)
                 continue
 
