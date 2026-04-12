@@ -252,13 +252,12 @@ def build_slack_digest(date: str, merged_stories: list[dict], apps: list[dict]) 
         merged_stories,
         key=lambda s: (-s.get("coverage_count", 1), s.get("headline", "")),
     )
-    for i, st in enumerate(merged_stories[:25], 1):
+    for i, st in enumerate(merged_stories[:35], 1):
         cc = st.get("coverage_count", 1)
         hl = st.get("headline", "")
         summ = st.get("summary", "")
         srcs = st.get("sources") or []
         names = ", ".join(s.get("newsletter", "") for s in srcs if s.get("newsletter"))
-        plink, _ = primary_and_types(st.get("links") or [])
         woven = summ
         for s in srcs[:3]:
             lk = s.get("link")
@@ -273,8 +272,14 @@ def build_slack_digest(date: str, merged_stories: list[dict], apps: list[dict]) 
             one = srcs[0].get("newsletter", "newsletter") if srcs else "newsletter"
             lines.append(md_to_slack(f"*{i}. {hl}* [1 source — {one}]"))
         lines.append(slack_escape(woven[:900]))
-        if plink:
-            lines.append(f"→ {plink}")
+        all_links = st.get("links") or []
+        if all_links:
+            lines.append(
+                "→ "
+                + " | ".join(
+                    L.get("url", "") for L in all_links[:5] if L.get("url")
+                )
+            )
         if cc > 1 and names:
             lines.append(md_to_slack(f"_Also covered by:_ {names}"))
         lines.append("")
@@ -283,12 +288,13 @@ def build_slack_digest(date: str, merged_stories: list[dict], apps: list[dict]) 
     lines.append("")
     lines.append(md_to_slack("🔧 *NOTABLE APPS & SITES*"))
     lines.append("")
-    for a in apps[:40]:
+    for a in apps[:60]:
         nm = a.get("name", "")
-        desc = a.get("description", "")
-        cat = a.get("category", "")
         url = a.get("url", "")
-        lines.append(md_to_slack(f"• *{nm}* — {desc} [{cat}] → {url}"))
+        desc_full = a.get("description", "") or a.get("name", "")
+        lines.append(md_to_slack(f"• *{nm}* — {desc_full}"))
+        if url:
+            lines.append(f"  → {url}")
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -302,11 +308,11 @@ def build_slack_digest(date: str, merged_stories: list[dict], apps: list[dict]) 
     return "\n".join(lines)
 
 
-def trim_to_words(text: str, max_words: int = 800) -> str:
+def trim_to_words(text: str, max_words: int = 1500) -> str:
     words = text.split()
     if len(words) <= max_words:
         return text
-    return " ".join(words[:max_words]) + "\n\n_(Digest truncated to ~800 words.)_"
+    return " ".join(words[:max_words]) + "\n\n_(Digest truncated to ~1500 words.)_"
 
 
 def slack_post_chunks(text: str, limit: int = 3500) -> list[str]:
@@ -539,7 +545,7 @@ def main() -> int:
     print(f"Wrote {OSINT_PATH}", flush=True)
 
     slack_text = build_slack_digest(d, merged_stories, dedup_apps)
-    slack_text = trim_to_words(slack_text, 800)
+    slack_text = trim_to_words(slack_text, 1500)
 
     latest = {
         "date": d,
