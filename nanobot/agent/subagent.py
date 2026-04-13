@@ -55,6 +55,7 @@ class SubagentManager:
         search_backend: str = "brave",
         search_searxng_url: str = "",
         search_max_results: int = 5,
+        disabled_skills: list[str] | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
 
@@ -69,6 +70,7 @@ class SubagentManager:
         self._search_backend = search_backend or "brave"
         self._search_searxng_url = search_searxng_url or ""
         self._search_max_results = search_max_results
+        self.disabled_skills = set(disabled_skills or [])
         self.runner = AgentRunner(provider)
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
@@ -242,7 +244,10 @@ class SubagentManager:
         from nanobot.agent.skills import SkillsLoader
 
         time_ctx = ContextBuilder._build_runtime_context(None, None)
-        skills_summary = SkillsLoader(self.workspace).build_skills_summary()
+        skills_summary = SkillsLoader(
+            self.workspace,
+            disabled_skills=self.disabled_skills,
+        ).build_skills_summary()
         return render_template(
             "agent/subagent_system.md",
             time_ctx=time_ctx,
