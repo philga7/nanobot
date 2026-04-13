@@ -221,6 +221,16 @@ if [[ -d "$INTEL_CACHE_RSS" ]] && command -v jq >/dev/null 2>&1; then
         [.[]
           | if type == "array" then .[] else . end
           | select(type == "object")
+          | if has("items") and (.items | type == "array") then
+              . as $feed | $feed.items[] | . + {
+                source: (.source // $feed.source // "RSS"),
+                category: (.category // $feed.category // null),
+                tier: (.tier // $feed.tier // null),
+                feed: (.feed // $feed.feed // $feed.source // "RSS")
+              }
+            else
+              .
+            end
         ]
       ' "${rss_json_files[@]}" 2>/dev/null || echo "[]"
     )"
