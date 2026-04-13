@@ -22,6 +22,8 @@ import json
 import os
 import re
 import sys
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 from urllib.parse import urlparse
@@ -67,21 +69,52 @@ _URL_RE = re.compile(r"https?://[^\s\>\)\"\'\,\]]+")
 
 _TRACK_HOSTS_NEWSLETTER = ("theneuron", "beehiiv", "substack", "newsletter")
 
+_substack_redirect_cache: dict[str, str] = {}
+
+
+def resolve_substack_redirect(url: str, timeout: int = 5) -> str:
+    """Follow Substack redirect URLs to get the final destination."""
+    if "substack.com/redirect" not in url:
+        return url
+    if url in _substack_redirect_cache:
+        return _substack_redirect_cache[url]
+    try:
+        req = urllib.request.Request(
+            url,
+            method="HEAD",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        resolved = resp.url or url
+    except Exception:
+        resolved = url
+    _substack_redirect_cache[url] = resolved
+    return resolved
+
 # ── Credentials ──────────────────────────────────────────────────────────────
-try:
-    with open(CREDS_PATH, encoding="utf-8") as f:
-        creds = json.load(f)
-    IMAP_HOST = creds["host"]
-    IMAP_PORT = int(creds.get("port", 993))
-    IMAP_USER = creds["username"]
-    IMAP_PASS = creds["password"]
-    IMAP_SSL = bool(creds.get("ssl", True))
-except FileNotFoundError:
-    print(f"ERROR: credentials not found at {CREDS_PATH}", file=sys.stderr)
-    sys.exit(1)
-except (KeyError, json.JSONDecodeError) as e:
-    print(f"ERROR: bad credentials file: {e}", file=sys.stderr)
-    sys.exit(1)
+IMAP_HOST = ""
+IMAP_PORT = 993
+IMAP_USER = ""
+IMAP_PASS = ""
+IMAP_SSL = True
+
+
+def _load_imap_creds() -> None:
+    global IMAP_HOST, IMAP_PORT, IMAP_USER, IMAP_PASS, IMAP_SSL
+    try:
+        with open(CREDS_PATH, encoding="utf-8") as f:
+            creds = json.load(f)
+        IMAP_HOST = creds["host"]
+        IMAP_PORT = int(creds.get("port", 993))
+        IMAP_USER = creds["username"]
+        IMAP_PASS = creds["password"]
+        IMAP_SSL = bool(creds.get("ssl", True))
+    except FileNotFoundError:
+        print(f"ERROR: credentials not found at {CREDS_PATH}", file=sys.stderr)
+        sys.exit(1)
+    except (KeyError, json.JSONDecodeError) as e:
+        print(f"ERROR: bad credentials file: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 class _HTMLStripper(html.parser.HTMLParser):
@@ -160,10 +193,29 @@ def decode_subject(raw_subject) -> str:
 
 def extract_urls(text: str) -> list[str]:
     found = _URL_RE.findall(text or "")
-    out = []
-    seen = set()
-    for u in found:
-        u = u.rstrip(").,;]")
+    normalized = [u.rstrip(").,;]") for u in found]
+    substack_unique: list[str] = []
+    seen_ss: set[str] = set()
+    for u in normalized:
+        if "substack.com/redirect" in u and u not in seen_ss:
+            seen_ss.add(u)
+            substack_unique.append(u)
+    to_resolve = substack_unique[:15]
+    resolved_map: dict[str, str] = {}
+    if to_resolve:
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            futures = {ex.submit(resolve_substack_redirect, u): u for u in to_resolve}
+            for fut in as_completed(futures):
+                orig = futures[fut]
+                try:
+                    resolved_map[orig] = fut.result()
+                except Exception:
+                    resolved_map[orig] = orig
+    out: list[str] = []
+    seen: set[str] = set()
+    for u in normalized:
+        if "substack.com/redirect" in u:
+            u = resolved_map.get(u, u)
         if u not in seen:
             seen.add(u)
             out.append(u)
@@ -229,11 +281,13 @@ def parse_notable_apps_section(text: str) -> tuple[list[dict], str]:
         up = line.strip()
         if re.match(r"(?i)^#*\s*notable\s+apps", up) or re.match(
             r"(?i)^notable\s+apps\s+(&|and)\s+sites", up
-        ):
+        ) or re.match(r"(?i)^\*+\s*notable\s+apps", up):
             in_section = True
             continue
         if in_section:
-            if up == "" or (up.startswith("#") and not re.match(r"(?i)notable", up)):
+            if up == "":
+                continue
+            if up.startswith("#") and not re.match(r"(?i)notable", up):
                 in_section = False
                 kept.append(line)
                 continue
@@ -266,33 +320,64 @@ def parse_notable_apps_section(text: str) -> tuple[list[dict], str]:
 
 
 def parse_stories_the_neuron_style(text: str) -> tuple[list[dict], list[dict]]:
-    """Numbered lists and/or bold-ish headline blocks with URLs."""
+    """Markdown H1–H3 sections, numbered lists, and/or paragraph blocks with URLs."""
     stories: list[dict] = []
     notable_apps, body = parse_notable_apps_section(text)
-    # Numbered stories: 1. Title ... until next number
-    for m in re.finditer(
-        r"(?m)^\s*(\d+)\.\s+([^\n]+)\n([\s\S]*?)(?=^\s*\d+\.\s+|\Z)",
-        body,
-    ):
-        headline = m.group(2).strip()
-        chunk = m.group(3).strip()
-        if len(headline) < 3:
-            continue
-        urls = extract_urls(chunk)
-        if not urls and len(chunk) < 20:
-            continue
-        summary = re.sub(r"\s+", " ", chunk)[:800]
-        links = []
-        for u in urls[:12]:
-            links.append({"url": u, "context": summary[:200], "type": link_type_for_url(u)})
-        stories.append(
-            {
-                "headline": headline[:300],
-                "summary": summary or headline,
-                "links": links,
-                "categories": infer_categories(headline, summary),
-            }
-        )
+
+    # Markdown header stories (The Neuron uses # 😺 **Headline**)
+    header_chunks = re.split(r"(?m)^(#{1,3}\s+.+)$", body)
+    if len(header_chunks) >= 3:
+        for i in range(1, len(header_chunks), 2):
+            headline_raw = (
+                header_chunks[i]
+                .lstrip("#")
+                .strip()
+                .lstrip("😺🤖🔥💡🚀⚠️🎯📊🧠🤯💰🏆✨ ")
+                .strip("*")
+            )
+            chunk = header_chunks[i + 1].strip() if i + 1 < len(header_chunks) else ""
+            if len(headline_raw) < 3:
+                continue
+            urls = extract_urls(chunk)
+            summary = re.sub(r"\s+", " ", chunk)[:800]
+            headline_clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", headline_raw)
+            links = [
+                {"url": u, "context": summary[:200], "type": link_type_for_url(u)}
+                for u in urls[:12]
+            ]
+            stories.append(
+                {
+                    "headline": headline_clean[:300],
+                    "summary": summary or headline_clean,
+                    "links": links,
+                    "categories": infer_categories(headline_clean, summary),
+                }
+            )
+
+    if not stories:
+        for m in re.finditer(
+            r"(?m)^\s*(\d+)\.\s+([^\n]+)\n([\s\S]*?)(?=^\s*\d+\.\s+|\Z)",
+            body,
+        ):
+            headline = m.group(2).strip()
+            chunk = m.group(3).strip()
+            if len(headline) < 3:
+                continue
+            urls = extract_urls(chunk)
+            if not urls and len(chunk) < 20:
+                continue
+            summary = re.sub(r"\s+", " ", chunk)[:800]
+            links = []
+            for u in urls[:12]:
+                links.append({"url": u, "context": summary[:200], "type": link_type_for_url(u)})
+            stories.append(
+                {
+                    "headline": headline[:300],
+                    "summary": summary or headline,
+                    "links": links,
+                    "categories": infer_categories(headline, summary),
+                }
+            )
 
     if not stories:
         # Fallback: paragraph blocks with a URL and a short first line as headline
@@ -305,11 +390,15 @@ def parse_stories_the_neuron_style(text: str) -> tuple[list[dict], list[dict]]:
             if not urls:
                 continue
             first = blk.split("\n", 1)[0].strip()
+            first = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", first)
             if len(first) > 160:
                 first = first[:157] + "..."
             rest = blk[len(first) :].strip() if len(blk) > len(first) else blk
             summary = re.sub(r"\s+", " ", rest)[:800]
-            links = [{"url": u, "context": summary[:200], "type": link_type_for_url(u)} for u in urls[:12]]
+            links = [
+                {"url": u, "context": summary[:200], "type": link_type_for_url(u)}
+                for u in urls[:12]
+            ]
             stories.append(
                 {
                     "headline": first,
@@ -410,107 +499,114 @@ def merge_raw_file(path: str, new_data: dict) -> None:
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
-processed_ids = load_processed_ids()
-errors: list[str] = []
-os.makedirs(CACHE_RAW, exist_ok=True)
 
-try:
-    if IMAP_SSL:
-        conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-    else:
-        conn = imaplib.IMAP4(IMAP_HOST, IMAP_PORT)
-    conn.login(IMAP_USER, IMAP_PASS)
-    conn.select("INBOX")
+def main() -> None:
+    _load_imap_creds()
+    processed_ids = load_processed_ids()
+    errors: list[str] = []
+    os.makedirs(CACHE_RAW, exist_ok=True)
 
-    status, data = conn.search(None, "UNSEEN")
-    if status != "OK":
-        raise RuntimeError(f"IMAP SEARCH failed: {status}")
+    try:
+        if IMAP_SSL:
+            conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        else:
+            conn = imaplib.IMAP4(IMAP_HOST, IMAP_PORT)
+        conn.login(IMAP_USER, IMAP_PASS)
+        conn.select("INBOX")
 
-    msg_ids = data[0].split() if data[0] else []
-    print(f"Found {len(msg_ids)} unread messages", flush=True)
+        status, data = conn.search(None, "UNSEEN")
+        if status != "OK":
+            raise RuntimeError(f"IMAP SEARCH failed: {status}")
 
-    for msg_id_bytes in msg_ids:
-        msg_id_str = msg_id_bytes.decode()
-        try:
-            status, msg_data = conn.fetch(msg_id_bytes, "(RFC822)")
-            if status != "OK":
-                errors.append(f"msg {msg_id_str}: FETCH failed ({status})")
-                continue
+        msg_ids = data[0].split() if data[0] else []
+        print(f"Found {len(msg_ids)} unread messages", flush=True)
 
-            raw_email = None
-            for item in msg_data:
-                if isinstance(item, tuple) and isinstance(item[1], bytes) and len(item[1]) > 200:
-                    raw_email = item[1]
-                    break
-            if raw_email is None:
-                errors.append(f"msg {msg_id_str}: no RFC822 content")
-                continue
-
-            msg = email.message_from_bytes(raw_email)
-            message_id_header = msg.get("Message-ID", "").strip()
-            unique_id = message_id_header if message_id_header else f"seq:{msg_id_str}"
-
-            if unique_id in processed_ids:
-                conn.store(msg_id_bytes, "+FLAGS", "\\Seen")
-                continue
-
-            subject = decode_subject(msg.get("Subject", ""))
-            from_raw = msg.get("From", "")
-            _, from_addr = parseaddr(from_raw)
-            from_addr = from_addr or from_raw
-            date_raw = msg.get("Date", "")
+        for msg_id_bytes in msg_ids:
+            msg_id_str = msg_id_bytes.decode()
             try:
-                date_dt = parsedate_to_datetime(date_raw)
-                if date_dt.tzinfo is None:
-                    date_dt = date_dt.replace(tzinfo=timezone.utc)
-                date_str = date_dt.strftime("%Y-%m-%d")
-            except Exception:
-                date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+                status, msg_data = conn.fetch(msg_id_bytes, "(RFC822)")
+                if status != "OK":
+                    errors.append(f"msg {msg_id_str}: FETCH failed ({status})")
+                    continue
 
-            body, _html = get_body_and_html(msg)
+                raw_email = None
+                for item in msg_data:
+                    if isinstance(item, tuple) and isinstance(item[1], bytes) and len(item[1]) > 200:
+                        raw_email = item[1]
+                        break
+                if raw_email is None:
+                    errors.append(f"msg {msg_id_str}: no RFC822 content")
+                    continue
 
-            if not is_ai_ml_newsletter(from_addr, subject, body):
-                print(f"  skip {msg_id_str} (not AI/ML newsletter filter): {subject[:50]}", flush=True)
-                continue
+                msg = email.message_from_bytes(raw_email)
+                message_id_header = msg.get("Message-ID", "").strip()
+                unique_id = message_id_header if message_id_header else f"seq:{msg_id_str}"
 
-            sender_review = from_addr.lower() not in AI_ML_SENDERS and bool(
-                SUBJECT_AI_KEYWORDS.search(subject or "")
-            )
+                if unique_id in processed_ids:
+                    conn.store(msg_id_bytes, "+FLAGS", "\\Seen")
+                    continue
 
-            newsletter_name, slug = newsletter_label_from_sender(from_addr)
-            rec = build_record(
-                newsletter_name,
-                slug,
-                date_str,
-                unique_id,
-                body,
-                from_addr,
-                subject,
-                sender_review,
-            )
+                subject = decode_subject(msg.get("Subject", ""))
+                from_raw = msg.get("From", "")
+                _, from_addr = parseaddr(from_raw)
+                from_addr = from_addr or from_raw
+                date_raw = msg.get("Date", "")
+                try:
+                    date_dt = parsedate_to_datetime(date_raw)
+                    if date_dt.tzinfo is None:
+                        date_dt = date_dt.replace(tzinfo=timezone.utc)
+                    date_str = date_dt.strftime("%Y-%m-%d")
+                except Exception:
+                    date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
-            out_path = os.path.join(CACHE_RAW, f"{slug}_{date_str}.json")
-            merge_raw_file(out_path, rec)
-            print(f"  wrote {out_path} ({len(rec['stories'])} stories)", flush=True)
+                body, _html = get_body_and_html(msg)
 
-            conn.store(msg_id_bytes, "+FLAGS", "\\Seen")
-            processed_ids.add(unique_id)
+                if not is_ai_ml_newsletter(from_addr, subject, body):
+                    print(f"  skip {msg_id_str} (not AI/ML newsletter filter): {subject[:50]}", flush=True)
+                    continue
 
-        except Exception as e:
-            errors.append(f"msg {msg_id_str}: {e}")
-            print(f"  WARNING: msg {msg_id_str} skipped — {e}", file=sys.stderr, flush=True)
+                sender_review = from_addr.lower() not in AI_ML_SENDERS and bool(
+                    SUBJECT_AI_KEYWORDS.search(subject or "")
+                )
 
-    conn.logout()
+                newsletter_name, slug = newsletter_label_from_sender(from_addr)
+                rec = build_record(
+                    newsletter_name,
+                    slug,
+                    date_str,
+                    unique_id,
+                    body,
+                    from_addr,
+                    subject,
+                    sender_review,
+                )
 
-except imaplib.IMAP4.error as e:
-    print(f"ERROR: IMAP connection failed — {e}", file=sys.stderr)
-    sys.exit(1)
-except OSError as e:
-    print(f"ERROR: network error — {e}", file=sys.stderr)
-    sys.exit(1)
+                out_path = os.path.join(CACHE_RAW, f"{slug}_{date_str}.json")
+                merge_raw_file(out_path, rec)
+                print(f"  wrote {out_path} ({len(rec['stories'])} stories)", flush=True)
 
-save_processed_ids(processed_ids)
-print(f"\nDone. Cache: {CACHE_RAW} | Errors: {len(errors)}")
-for e in errors:
-    print(f"  {e}", file=sys.stderr)
+                conn.store(msg_id_bytes, "+FLAGS", "\\Seen")
+                processed_ids.add(unique_id)
+
+            except Exception as e:
+                errors.append(f"msg {msg_id_str}: {e}")
+                print(f"  WARNING: msg {msg_id_str} skipped — {e}", file=sys.stderr, flush=True)
+
+        conn.logout()
+
+    except imaplib.IMAP4.error as e:
+        print(f"ERROR: IMAP connection failed — {e}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        print(f"ERROR: network error — {e}", file=sys.stderr)
+        sys.exit(1)
+
+    save_processed_ids(processed_ids)
+    print(f"\nDone. Cache: {CACHE_RAW} | Errors: {len(errors)}")
+    for e in errors:
+        print(f"  {e}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
 EOF
