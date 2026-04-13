@@ -496,7 +496,7 @@ if (( rss_items > 0 )); then
             end
         )
       | .items
-      | map(. as $row | "• [" + $row._src + "]" + tier($row._src) + " " + ($row._text | tostring | if length > 150 then .[0:150] + "..." else . end))
+      | map(. as $row | "• [" + $row._src + "]" + tier($row._src) + " " + ($row._text | tostring | if length > 150 then .[0:150] + "..." else . end) + (if ($row.url // "" | test("^https?://")) then "\n  → " + $row.url else "" end))
       | .[]
     ' 2>/dev/null || true
   )"
@@ -571,7 +571,7 @@ if (( twitter_items > 0 )); then
       | map(select((._text | tostring | test("^\\s*$") | not)))
       | sort_by(. as $row | [-(score($row._text)), ($row._ts | . as $t | -((if $t == "" then 0 else (try ($t | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch 0) end)))])
       | .[:10]
-      | map(. as $row | "• @" + $row._handle + tier($row._handle) + ": " + ($row._text | tostring | if length > 200 then .[0:200] + "..." else . end))
+      | map(. as $row | "• @" + $row._handle + tier($row._handle) + ": " + ($row._text | tostring | if length > 200 then .[0:200] + "..." else . end) + (if ($row.url // "" | test("^https?://")) then "\n  → " + $row.url else "" end))
       | .[]
     ' 2>/dev/null || true
   )"
@@ -591,7 +591,7 @@ if [[ "$DESK" == "intel" ]] && (( rss_items > 0 )); then
           )
         ))
       | .[:5]
-      | map("• [" + (.source // .feed // "RSS") + "] " + (.title // .headline // .text // "(no title)"))
+      | map("• [" + (.source // .feed // "RSS") + "] " + (.title // .headline // .text // "(no title)") + (if ((.url // "") | test("^https?://")) then "\n  → " + .url else "" end))
       | .[]
     ' 2>/dev/null || true
   )"
@@ -625,11 +625,11 @@ if [[ -n "$topic_weights_key" && -n "$high_weight_topics" && ( (( rss_items > 0 
           nonempty(.title // .headline // .text // "")
           and (matches(.title // .headline // .text // "")
             or matches(.source // .feed // ""))
-        )) | .[:5] | map("• [RSS/" + (.source // .feed // "?") + "] " + trunc_rss(.title // .headline // .text // ""))),
+        )) | .[:5] | map("• [RSS/" + (.source // .feed // "?") + "] " + trunc_rss(.title // .headline // .text // "") + (if ((.url // "") | test("^https?://")) then "\n  → " + .url else "" end))),
         (.twitter // [] | map(select(
           nonempty(.text // .content // "")
           and matches(.text // .content // "")
-        )) | .[:5] | map("• [TW/@" + ((.handle // .user // .screen_name // "?") | ltrimstr("@")) + "] " + trunc_tw(.text // .content // "")))
+        )) | .[:5] | map("• [TW/@" + ((.handle // .user // .screen_name // "?") | ltrimstr("@")) + "] " + trunc_tw(.text // .content // "") + (if ((.url // "") | test("^https?://")) then "\n  → " + .url else "" end)))
       ]
       | add // []
       | .[]
