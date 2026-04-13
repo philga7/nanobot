@@ -159,7 +159,17 @@ if normalized="$(
             link: (nonempty_str(.link) // nonempty_str($feed.link) // ""),
             url: (. | rss_canon_url)
           })
-        elif type == "object" then
+        elif (type == "object") and has("items") and (.items | type == "array") then
+          (. as $row | $row.items[] | . + {
+            source: (.source // $row.source // "RSS"),
+            tier: (.tier // $row.tier // null),
+            category: (nonempty_str(.category) // nonempty_str($row.category) // null),
+            feed: (.feed // $row.feed // $row.source // "RSS"),
+            published: (.published // .pub_date // .pubDate // .date),
+            link: (nonempty_str(.link) // nonempty_str($row.link) // ""),
+            url: (. | rss_canon_url)
+          })
+        elif (type == "object") and (has("title") or has("headline")) then
           . + {
             link: (nonempty_str(.link) // ""),
             url: (. | rss_canon_url)
