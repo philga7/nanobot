@@ -143,19 +143,27 @@ if normalized="$(
       )
       | gsub("^\\s+"; "")
       | gsub("\\s+$"; "");
+    def nonempty_str(s):
+      ((s // "") | tostring | if length > 0 then . else empty end);
+    def rss_canon_url:
+      nonempty_str(.url) // nonempty_str(.link) // "";
     .rss = [
       (.rss // [])[]
       | if (type == "object") and has("feeds") and (.feeds | type == "object") then
           (.feeds | to_entries[] | .value as $feed | ($feed.items // [])[] | . + {
             source: ($feed.source // .source // "RSS"),
             tier: ($feed.tier // .tier),
-            category: ($feed.category // .category),
+            category: (nonempty_str($feed.category) // nonempty_str(.category) // null),
             feed: ($feed.feed // .feed),
             published: (.published // .pub_date // .pubDate // .date),
-            url: (.url // .link // "")
+            link: (nonempty_str(.link) // nonempty_str($feed.link) // ""),
+            url: (. | rss_canon_url)
           })
         elif type == "object" then
-          . + {url: (.url // .link // "")}
+          . + {
+            link: (nonempty_str(.link) // ""),
+            url: (. | rss_canon_url)
+          }
         else
           empty
         end
@@ -583,11 +591,14 @@ if [[ "$DESK" == "intel" ]] && (( rss_items > 0 )); then
   georgia_rss="$(
     echo "$brief_json" | jq -r '
       (.rss // [])
+      | map(. + {_text: (.title // .headline // .text // "")})
       | map(select(
-          ((.title // .headline // .text // "") | tostring | test("^\\s*$") | not)
+          (._text | tostring | test("^\\s*$") | not)
           and (
-            (.title // .headline // .text // "" | ascii_downcase | test("georgia|atlanta|ajc|gpb|gop|kemp|warnock"))
-            or (.source // .feed // "" | ascii_downcase | test("ajc|gpb|georgia"))
+            ((.category // "") | test("georgia"; "i"))
+            or ((.source // "") | test("capitol-beat|ga-pundit|georgia-recorder|georgia-recorder-local|gpb-georgia|ajc|gpb|georgia"; "i"))
+            or ((.feed // "") | test("capitol-beat|ga-pundit|georgia-recorder|georgia-recorder-local|gpb-georgia|ajc|gpb|georgia"; "i"))
+            or ((._text // "") | test("georgia|atlanta|kemp|warnock|ossoff|fani willis|ajc|gpb|gop"; "i"))
           )
         ))
       | .[:5]
