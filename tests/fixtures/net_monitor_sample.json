@@ -1,0 +1,28 @@
+{
+  "timestamp": "2026-04-13T19:38:00Z",
+  "internet": {
+    "status": "up",
+    "latency_ms": 6.2,
+    "packet_loss_pct": 0,
+    "dns": "ok"
+  },
+  "wireguard": {
+    "interface": "wg-home",
+    "status": "connected",
+    "last_handshake_ago_s": 1,
+    "peer_reachable": true,
+    "transfer_down_mb": 1.54,
+    "transfer_up_mb": 0.83
+  },
+  "tailscale": {
+    "status": "connected",
+    "local_ip": "100.86.27.28",
+    "funnel_reachable": true,
+    "home_node_reachable": true
+  },
+  "home_network": {
+    "reachable": true,
+    "via": "wireguard"
+  },
+  "alert": null
+}
