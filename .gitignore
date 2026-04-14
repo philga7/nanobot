@@ -91,3 +91,7 @@ logs/
 tmp/
 temp/
 *.tmp
+
+# net-audit runtime cache artifacts
+nanobot/skills/net-audit/cache/*.json
+!nanobot/skills/net-audit/cache/cisa-kev.json
