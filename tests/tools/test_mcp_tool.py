@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack, asynccontextmanager
 import sys
+from contextlib import asynccontextmanager
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from nanobot.agent.tools.mcp import (
-    MCPResourceWrapper,
     MCPPromptWrapper,
+    MCPResourceWrapper,
     MCPToolWrapper,
     connect_mcp_servers,
 )
+from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.config.schema import MCPServerConfig
 
@@ -183,6 +184,32 @@ def test_wrapper_normalizes_nullable_property_anyof() -> None:
         "description": "optional name",
         "nullable": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_ntfy_me_marks_message_tool_sent_in_turn() -> None:
+    async def call_tool(_name: str, arguments: dict) -> object:
+        return SimpleNamespace(content=[_FakeTextContent("sent")])
+
+    registry = ToolRegistry()
+    message_tool = MessageTool()
+    message_tool._sent_in_turn = False
+    registry.register(message_tool)
+
+    tool_def = SimpleNamespace(
+        name="ntfy_me",
+        description="push ntfy",
+        inputSchema={"type": "object", "properties": {}},
+    )
+    wrapper = MCPToolWrapper(
+        SimpleNamespace(call_tool=call_tool),
+        "ntfy",
+        tool_def,
+        tool_registry=registry,
+    )
+    await wrapper.execute(body="hi")
+
+    assert message_tool._sent_in_turn is True
 
 
 @pytest.mark.asyncio

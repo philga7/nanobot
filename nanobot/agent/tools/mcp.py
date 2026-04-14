@@ -75,7 +75,15 @@ def _normalize_schema_for_openai(schema: Any) -> dict[str, Any]:
 class MCPToolWrapper(Tool):
     """Wraps a single MCP server tool as a nanobot Tool."""
 
-    def __init__(self, session, server_name: str, tool_def, tool_timeout: int = 30):
+    def __init__(
+        self,
+        session,
+        server_name: str,
+        tool_def,
+        tool_timeout: int = 30,
+        *,
+        tool_registry: ToolRegistry | None = None,
+    ):
         self._session = session
         self._original_name = tool_def.name
         self._name = f"mcp_{server_name}_{tool_def.name}"
@@ -83,6 +91,7 @@ class MCPToolWrapper(Tool):
         raw_schema = tool_def.inputSchema or {"type": "object", "properties": {}}
         self._parameters = _normalize_schema_for_openai(raw_schema)
         self._tool_timeout = tool_timeout
+        self._tool_registry = tool_registry
 
     @property
     def name(self) -> str:
@@ -121,6 +130,15 @@ class MCPToolWrapper(Tool):
                 exc,
             )
             return f"(MCP tool call failed: {type(exc).__name__})"
+
+        # Align with MessageTool delivery: cron's fallback ntfy HTTP ping skips when
+        # the agent already notified via the common MCP ntfy tool (any server name).
+        if self._original_name == "ntfy_me" and self._tool_registry is not None:
+            from nanobot.agent.tools.message import MessageTool
+
+            mt = self._tool_registry.get("message")
+            if isinstance(mt, MessageTool):
+                mt._sent_in_turn = True
 
         parts = []
         for block in result.content:
@@ -401,7 +419,13 @@ async def connect_mcp_servers(
                         name,
                     )
                     continue
-                wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
+                wrapper = MCPToolWrapper(
+                    session,
+                    name,
+                    tool_def,
+                    tool_timeout=cfg.tool_timeout,
+                    tool_registry=registry,
+                )
                 registry.register(wrapper)
                 logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
                 registered_count += 1
