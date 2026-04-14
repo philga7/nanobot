@@ -763,19 +763,32 @@ def gateway(
 
         response = resp.content if resp else ""
 
+        message_tool = agent.tools.get("message")
+
         # Fire-and-forget direct HTTP notification to ntfy after MCP tools are connected.
-        if message:
+        # Only send ntfy if the job is configured for delivery or the agent didn't post to any channel.
+        should_ntfy = job.payload.deliver or not (
+            isinstance(message_tool, MessageTool) and message_tool._sent_in_turn
+        )
+        if message and should_ntfy:
             ntfy_url = os.getenv("NTFY_URL")
             ntfy_topic = os.getenv("NTFY_TOPIC")
             if ntfy_url and ntfy_topic:
                 import httpx
 
                 target = ntfy_url.rstrip("/") + "/" + ntfy_topic
-                # HTTP headers must be ASCII; fall back to a sanitized title.
-                try:
-                    title = message.encode("ascii", "ignore").decode("ascii") or "Reminder"
-                except Exception:
-                    title = "Reminder"
+                # Use job name as title (short, safe for HTTP headers).
+                # Fall back to job ID if name is empty.
+                raw_title = job.name or job.id or "Reminder"
+                # Sanitize: ASCII only, strip newlines, truncate to 80 chars.
+                title = (
+                    raw_title.encode("ascii", "ignore")
+                    .decode("ascii")
+                    .replace("\n", " ")[:80]
+                    or "Reminder"
+                )
+                # Truncate message body for ntfy (max ~400 chars for readability).
+                ntfy_body = message.split("\n")[0][:400] if message else "Cron job completed"
                 headers: dict[str, str] = {
                     "X-Title": title,
                     "X-Markdown": "true",
@@ -787,7 +800,7 @@ def gateway(
                 try:
                     async with httpx.AsyncClient(timeout=5.0) as client:
                         ntfy_resp = await client.post(
-                            target, content=message.encode("utf-8"), headers=headers
+                            target, content=ntfy_body.encode("utf-8"), headers=headers
                         )
                     if ntfy_resp.status_code >= 400:
                         logger.error(
@@ -803,7 +816,6 @@ def gateway(
                         exc,
                     )
 
-        message_tool = agent.tools.get("message")
         if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
             return response
 
