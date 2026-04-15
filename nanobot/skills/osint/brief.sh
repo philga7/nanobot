@@ -252,6 +252,53 @@ if (( desk_rss_len > 0 )); then
   )"
 fi
 
+# Merge GDELT DOC headlines into the RSS stream so deliver.sh topic-weights
+# and RSS FEEDS ranking apply (desk must list gdelt under sources.api).
+if echo "$desk_api_json" | jq -e 'index("gdelt") != null' >/dev/null 2>&1; then
+  GDELT_CACHE="${CACHE_DIR}/gdelt.json"
+  if [[ -f "$GDELT_CACHE" ]] && ! jq -e 'has("error") and (.error != null and .error != "")' "$GDELT_CACHE" >/dev/null 2>&1; then
+    gdelt_as_rss="$(
+      jq -c '
+        [ (.articles // [])[]
+          | select((.title // "") != "" or (.url // "") != "")
+          | (.seendate // "" | tostring) as $sd
+          | ($sd
+            | if test("^[0-9]{8}T[0-9]{6}Z$") then
+                .[0:4] + "-" + .[4:6] + "-" + .[6:8] + "T" + .[9:11] + ":" + .[11:13] + ":" + .[13:15] + "Z"
+              elif test("^[0-9]{14}$") then
+                .[0:4] + "-" + .[4:6] + "-" + .[6:8] + "T" + .[8:10] + ":" + .[10:12] + ":" + .[12:14] + "Z"
+              elif test("^[0-9]{8}$") then
+                .[0:4] + "-" + .[4:6] + "-" + .[6:8] + "T12:00:00Z"
+              else $sd end
+            ) as $pub
+          | {
+              title: (.title // ""),
+              url: (.url // ""),
+              source: "GDELT",
+              feed: "gdelt",
+              category: "geopolitics",
+              tier: null,
+              published: (
+                if ($pub | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")) then $pub else null end
+              ),
+              description: (
+                [
+                  (.domain // empty | select(. != "")),
+                  (.language // empty | select(. != "") | "[" + . + "]")
+                ] | join(" ") | if . == "" then null else . end
+              )
+            }
+        ]
+      ' "$GDELT_CACHE" 2>/dev/null || echo "[]"
+    )"
+    rss_items_json="$(
+      jq -n --argjson r "$rss_items_json" --argjson g "${gdelt_as_rss:-[]}" '$r + $g' 2>/dev/null || echo "$rss_items_json"
+    )"
+    gct="$(echo "${gdelt_as_rss:-[]}" | jq 'length' 2>/dev/null || echo 0)"
+    echo "Brief: merged ${gct} GDELT articles into RSS stream" >&2
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Phase 5: Collect Twitter items
 # ---------------------------------------------------------------------------
