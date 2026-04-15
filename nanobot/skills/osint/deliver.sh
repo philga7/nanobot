@@ -227,17 +227,23 @@ if [[ "$rss_filter_active" == "yes" ]] || [[ "$twitter_filter_active" == "yes" ]
     echo "$brief_json" | jq -c \
       --argjson rss_allow "$desk_rss_json" \
       --argjson tw_allow "$desk_tw_json" \
+      --argjson api_allow "$desk_api_json" \
       --arg rss_on "$rss_filter_active" \
       --arg tw_on "$twitter_filter_active" \
       '
       def norm_rss: ascii_downcase | gsub("-"; "");
       def norm_tw: gsub("-"; "") | gsub("_"; "") | ascii_downcase;
+      def api_has_gdelt:
+        ($api_allow | map(ascii_downcase | gsub("-"; "_")) | index("gdelt") != null);
       (if $rss_on != "yes" then . else
         .rss |= (
           if ($rss_allow | length) == 0 then []
           else map(select(
               (.feed // .source // .id // "" | tostring | norm_rss) as $f
-              | ($rss_allow | map(norm_rss) | index($f) != null)
+              | (
+                  ($rss_allow | map(norm_rss) | index($f) != null)
+                  or (api_has_gdelt and $f == "gdelt")
+                )
             ))
           end
         )

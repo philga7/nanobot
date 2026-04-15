@@ -94,7 +94,7 @@ def filter_safecast($v):
 
 # FIRMS/Safecast use headline rows above, not aggregated here.
 def count_only_keys:
-  ["opensky", "maritime", "kiwisdr", "comtrade", "usaspending", "patents", "epa", "gscpi", "cloudflare", "reddit", "telegram", "ofac", "opensanctions", "celestrak", "space", "reliefweb", "gdelt"];
+  ["opensky", "maritime", "kiwisdr", "comtrade", "usaspending", "patents", "epa", "gscpi", "cloudflare", "reddit", "telegram", "ofac", "opensanctions", "celestrak", "space", "reliefweb"];
 
 def count_label($k):
   ({
@@ -237,6 +237,18 @@ def source_row($k; $v):
       order: 50,
       line: ("• [Bluesky] " + trunc([ ($v.topics // [])[0:5][] | .topic ] | join(", ")))
     }
+  elif $k == "gdelt" and (($v.articles // []) | length > 0) then
+    (($v.query // "doc") | tostring | if length > 70 then .[0:70] + "..." else . end) as $q
+    | {
+        order: 36,
+        line: (
+          "• [GDELT] "
+          + trunc(
+              "\(($v.articles | length)) articles (\($q)): "
+                + ([ ($v.articles // [])[0:3][] | (.title // .url // "?") ] | join(" | "))
+            )
+        )
+      }
   elif $k == "acled" and (($v.count // 0) > 0) then
     { order: 55, line: trunc("• [ACLED] " + ($v.count | tostring) + " events") }
   elif $k == "firms" then
@@ -266,8 +278,7 @@ def source_row($k; $v):
       end
   elif (count_only_keys | index($k) != null) and (($v.count // 0) > 0) then
     { order: 80, kind: "count", key: $k, count: $v.count }
-  elif (($v.count // null) != null) and (($v.count | type) == "number") and ($v.count > 0)
-       and ($k != "gdelt") then
+  elif (($v.count // null) != null) and (($v.count | type) == "number") and ($v.count > 0) then
     { order: 85, kind: "count", key: $k, count: $v.count }
   else
     empty
@@ -275,7 +286,6 @@ def source_row($k; $v):
 
 [ (.sources // {}) | to_entries[]
   | .key as $k | .value as $v
-  | select($k != "gdelt")
   | select(healthy($v))
   | select(desk_ok($k))
   | source_row($k; $v)
