@@ -766,11 +766,13 @@ def gateway(
         message_tool = agent.tools.get("message")
 
         # Fire-and-forget direct HTTP notification to ntfy after MCP tools are connected.
-        # Only send ntfy if the job is configured for delivery or the agent didn't post to any channel.
+        # Fallback ntfy only when deliver=true and the agent did not post (agent failure path).
+        # When deliver=false, the agent owns delivery—including choosing not to notify—so never
+        # treat "no channel post" as a reason to ping ntfy here.
         # MessageTool sets _sent_in_turn on channel posts; MCP ntfy_me does the same after success
         # (see MCPToolWrapper) so cron does not double-notify.
         agent_delivered = isinstance(message_tool, MessageTool) and message_tool._sent_in_turn
-        should_ntfy = job.payload.deliver or not agent_delivered
+        should_ntfy = job.payload.deliver and not agent_delivered
         if message and should_ntfy:
             ntfy_url = os.getenv("NTFY_URL")
             ntfy_topic = os.getenv("NTFY_TOPIC")
