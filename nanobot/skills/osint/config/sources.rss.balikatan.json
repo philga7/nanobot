@@ -1,0 +1,32 @@
+{
+  "rss": [
+    {
+      "id": "dvids-balikatan",
+      "url": "https://www.dvidshub.net/rss/news/?q=balikatan&rss=1",
+      "name": "DVIDS Balikatan",
+      "category": "military",
+      "tier": "mainstream"
+    },
+    {
+      "id": "war-gov-balikatan",
+      "url": "https://www.war.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=1&Site=739",
+      "name": "DOD War.gov News",
+      "category": "military",
+      "tier": "mainstream"
+    },
+    {
+      "id": "imef-marines",
+      "url": "https://www.imef.marines.mil/Portals/1/RSS/PressReleases.xml",
+      "name": "I MEF Marines",
+      "category": "military",
+      "tier": "mainstream"
+    },
+    {
+      "id": "pacom-news",
+      "url": "https://www.pacom.mil/Media/News/News-Articles/rss/",
+      "name": "INDOPACOM News",
+      "category": "military",
+      "tier": "mainstream"
+    }
+  ]
+}

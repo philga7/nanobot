@@ -13,7 +13,15 @@
     "epstein": 1.2,
     "doge": 1.2,
     "election": 1.2,
-    "election integrity": 1.2
+    "election integrity": 1.2,
+    "balikatan": 3.0,
+    "exercise balikatan": 4.0,
+    "philippines military": 2.0,
+    "indo-pacific": 2.0,
+    "indopacom": 2.0,
+    "south china sea": 1.5,
+    "cagayan de oro": 2.0,
+    "fort magsaysay": 2.0
   },
   "ignored_topic_phrases": [],
   "source_tier_classification": {
@@ -82,6 +90,10 @@
           "cfr",
           "white-house",
           "dod-news",
+          "dvids-balikatan",
+          "war-gov-balikatan",
+          "imef-marines",
+          "pacom-news",
           "krebs",
           "capitol-beat",
           "ga-pundit",
