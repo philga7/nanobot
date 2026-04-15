@@ -195,6 +195,7 @@ async def test_successful_request_uses_fixed_api_session(aiohttp_client, mock_ag
     assert body["model"] == "test-model"
     mock_agent.process_direct.assert_called_once_with(
         content="hello",
+        media=None,
         session_key=API_SESSION_KEY,
         channel="api",
         chat_id=API_CHAT_ID,
@@ -294,6 +295,12 @@ async def test_health_endpoint(aiohttp_client, app) -> None:
     assert body["status"] == "ok"
 
 
+# 1×1 transparent PNG — decodable so API persists a media path for multimodal tests.
+_MINI_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
 @pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")
 @pytest.mark.asyncio
 async def test_multimodal_content_extracts_text(aiohttp_client, mock_agent) -> None:
@@ -307,25 +314,29 @@ async def test_multimodal_content_extracts_text(aiohttp_client, mock_agent) -> N
                     "role": "user",
                     "content": [
                         {"type": "text", "text": "describe this"},
-                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{_MINI_PNG_B64}"},
+                        },
                     ],
                 }
             ]
         },
     )
     assert resp.status == 200
-    mock_agent.process_direct.assert_called_once_with(
-        content="describe this",
+    mock_agent.process_direct.assert_called_once()
+    kwargs = mock_agent.process_direct.call_args.kwargs
+    assert kwargs["content"] == "describe this"
+    assert kwargs["session_key"] == API_SESSION_KEY
+    assert kwargs["channel"] == "api"
+    assert kwargs["chat_id"] == API_CHAT_ID
+    assert kwargs["metadata"] == build_api_path_process_direct_metadata(
         session_key=API_SESSION_KEY,
-        channel="api",
         chat_id=API_CHAT_ID,
-        metadata=build_api_path_process_direct_metadata(
-            session_key=API_SESSION_KEY,
-            chat_id=API_CHAT_ID,
-            user_message="describe this",
-            http_request_id=None,
-        ),
+        user_message="describe this",
+        http_request_id=None,
     )
+    assert len(kwargs.get("media") or []) >= 1
 
 
 @pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")
@@ -341,6 +352,7 @@ async def test_x_request_id_propagates_to_process_direct_metadata(aiohttp_client
     assert resp.status == 200
     mock_agent.process_direct.assert_called_once_with(
         content="ping",
+        media=None,
         session_key=API_SESSION_KEY,
         channel="api",
         chat_id=API_CHAT_ID,
@@ -409,3 +421,31 @@ async def test_empty_response_falls_back(aiohttp_client) -> None:
     body = await resp.json()
     assert body["choices"][0]["message"]["content"] == EMPTY_FINAL_RESPONSE_MESSAGE
     assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_process_direct_accepts_media() -> None:
+    """process_direct should forward media paths to _process_message."""
+    from nanobot.agent.loop import AgentLoop
+
+    loop = AgentLoop.__new__(AgentLoop)
+    loop._connect_mcp = AsyncMock()
+
+    captured_msg = None
+
+    async def fake_process(msg, *, session_key="", on_progress=None, on_stream=None, on_stream_end=None):
+        nonlocal captured_msg
+        captured_msg = msg
+        return None
+
+    loop._process_message = fake_process
+
+    await loop.process_direct(
+        content="analyze this",
+        media=["/tmp/image.png", "/tmp/report.pdf"],
+        session_key="test:1",
+    )
+
+    assert captured_msg is not None
+    assert captured_msg.media == ["/tmp/image.png", "/tmp/report.pdf"]
+    assert captured_msg.content == "analyze this"
