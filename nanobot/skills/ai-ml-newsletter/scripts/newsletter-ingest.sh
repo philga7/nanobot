@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -37,6 +38,9 @@ CACHE_RAW = os.environ.get(
 )
 
 BODY_TEXT_DEBUG_LIMIT = 30000
+SUBSTACK_REDIRECT_CACHE_PATH = os.path.expanduser(
+    "~/.wrenvps/ai-ml-newsletter/substack_redirect_cache.json"
+)
 
 AI_ML_SENDERS = frozenset(
     s.lower()
@@ -147,24 +151,73 @@ _URL_RE = re.compile(r"https?://[^\s\>\)\"\'\,\]]+")
 _TRACK_HOSTS_NEWSLETTER = ("theneuron", "beehiiv", "substack", "newsletter")
 
 _substack_redirect_cache: dict[str, str] = {}
+_substack_redirect_disk_loaded = False
 
 
-def resolve_substack_redirect(url: str, timeout: int = 5) -> str:
-    """Follow Substack redirect URLs to get the final destination."""
+def _ensure_substack_redirect_disk_cache() -> None:
+    """Load persistent Substack redirect map once per process."""
+    global _substack_redirect_disk_loaded, _substack_redirect_cache
+    if _substack_redirect_disk_loaded:
+        return
+    _substack_redirect_disk_loaded = True
+    try:
+        with open(SUBSTACK_REDIRECT_CACHE_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    _substack_redirect_cache.setdefault(k, v)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
+        pass
+
+
+def _save_substack_redirect_disk_cache() -> None:
+    """Persist redirect map for later ingests (avoids re-hitting Substack)."""
+    if not _substack_redirect_cache:
+        return
+    try:
+        os.makedirs(os.path.dirname(SUBSTACK_REDIRECT_CACHE_PATH), exist_ok=True)
+        with open(SUBSTACK_REDIRECT_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(_substack_redirect_cache, f, indent=0, sort_keys=True)
+    except OSError:
+        pass
+
+
+def resolve_substack_redirect(url: str, timeout: int = 10) -> str:
+    """Follow Substack redirect URLs to the final destination (HEAD + GET fallback)."""
     if "substack.com/redirect" not in url:
         return url
+    _ensure_substack_redirect_disk_cache()
     if url in _substack_redirect_cache:
         return _substack_redirect_cache[url]
-    try:
-        req = urllib.request.Request(
-            url,
-            method="HEAD",
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        resolved = resp.url or url
-    except Exception:
-        resolved = url
+
+    resolved = url
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                url,
+                method="HEAD",
+                headers={"User-Agent": "Mozilla/5.0 (compatible; nanobot-newsletter/1)"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resolved = resp.geturl() or url
+            if resolved and "substack.com/redirect" not in (resolved or ""):
+                break
+        except Exception:
+            if attempt < 2:
+                time.sleep(0.35 * (2**attempt))
+
+    if resolved == url or "substack.com/redirect" in (resolved or ""):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; nanobot-newsletter/1)"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resolved = resp.geturl() or url
+        except Exception:
+            pass
+
     _substack_redirect_cache[url] = resolved
     return resolved
 
@@ -269,6 +322,7 @@ def decode_subject(raw_subject) -> str:
 
 
 def extract_urls(text: str) -> list[str]:
+    _ensure_substack_redirect_disk_cache()
     found = _URL_RE.findall(text or "")
     normalized = [u.rstrip(").,;]") for u in found]
     substack_unique: list[str] = []
@@ -277,17 +331,25 @@ def extract_urls(text: str) -> list[str]:
         if "substack.com/redirect" in u and u not in seen_ss:
             seen_ss.add(u)
             substack_unique.append(u)
-    to_resolve = substack_unique[:80]
+    to_resolve = substack_unique[:200]
     resolved_map: dict[str, str] = {}
     if to_resolve:
-        with ThreadPoolExecutor(max_workers=5) as ex:
+        with ThreadPoolExecutor(max_workers=3) as ex:
             futures = {ex.submit(resolve_substack_redirect, u): u for u in to_resolve}
-            for fut in as_completed(futures):
-                orig = futures[fut]
-                try:
-                    resolved_map[orig] = fut.result()
-                except Exception:
-                    resolved_map[orig] = orig
+            try:
+                for fut in as_completed(futures, timeout=300):
+                    orig = futures[fut]
+                    try:
+                        resolved_map[orig] = fut.result()
+                    except Exception:
+                        resolved_map[orig] = orig
+            except TimeoutError:
+                for fut, orig in futures.items():
+                    if orig not in resolved_map:
+                        try:
+                            resolved_map[orig] = fut.result(timeout=0)
+                        except Exception:
+                            resolved_map[orig] = orig
     out: list[str] = []
     seen: set[str] = set()
     for u in normalized:
@@ -736,10 +798,60 @@ def parse_substack_stories(text: str) -> tuple[list[dict], list[dict]]:
 _TLDR_SECTION_START = re.compile(r"\n(?=🚀|💡|🔥|📊|⚡|🧠|🤖|🎯|🤝|💻)")
 
 
+def _parse_tldr_reference_urls(text: str) -> dict[int, str]:
+    """Map TLDR footnote numbers [N] to URLs from the body / reference list."""
+    mapping: dict[int, str] = {}
+    if not text:
+        return mapping
+    for m in re.finditer(
+        r"\[(\d+)\]\s*(?:\(link\))?\s*(https?://[^\s\]\)<>\"']+)",
+        text,
+        re.IGNORECASE,
+    ):
+        n = int(m.group(1))
+        mapping[n] = m.group(2).rstrip(").,;]")
+    for m in re.finditer(r"(?m)^\s*(\d+)\.\s+(https?://\S+)", text):
+        n = int(m.group(1))
+        mapping.setdefault(n, m.group(2).rstrip(").,;]"))
+    return mapping
+
+
+def _tldr_footnote_link_dicts(blob: str, ref_map: dict[int, str], summary_text: str) -> list[dict]:
+    if not ref_map or not blob:
+        return []
+    ctx = (summary_text or "")[:200]
+    out: list[dict] = []
+    seen: set[int] = set()
+    for m in re.finditer(r"\[(\d+)\]", blob):
+        idx = int(m.group(1))
+        if idx in seen:
+            continue
+        seen.add(idx)
+        u = ref_map.get(idx)
+        if not u:
+            continue
+        if "substack.com/redirect" in u:
+            u = resolve_substack_redirect(u)
+        out.append({"url": u, "context": ctx, "type": link_type_for_url(u)})
+    return out
+
+
+def _merge_story_link_dicts(primary: list[dict], extra: list[dict], cap: int = 12) -> list[dict]:
+    by_url: dict[str, dict] = {}
+    for L in primary + extra:
+        u = (L.get("url") or "").strip()
+        if not u:
+            continue
+        if u not in by_url:
+            by_url[u] = L
+    return list(by_url.values())[:cap]
+
+
 def parse_tldr_stories(text: str) -> tuple[list[dict], list[dict]]:
     """Parse TLDR AI-style emoji sections and bullet blocks."""
     stories: list[dict] = []
     notable_apps: list[dict] = []
+    ref_map = _parse_tldr_reference_urls(text)
 
     body = re.sub(
         r"^.*?(?=🚀|💡|🔥|📊|⚡|🧠|🤖|🎯|🤝|💻)",
@@ -809,11 +921,12 @@ def parse_tldr_stories(text: str) -> tuple[list[dict], list[dict]]:
                 continue
 
             summary_text = clean_summary(re.sub(r"\s+", " ", summary_text)[:800])
-            urls = extract_urls(block)
-            links = [
+            url_links = [
                 {"url": u, "context": summary_text[:200], "type": link_type_for_url(u)}
-                for u in urls[:12]
+                for u in extract_urls(block)[:12]
             ]
+            fn_links = _tldr_footnote_link_dicts(block, ref_map, summary_text)
+            links = _merge_story_link_dicts(url_links, fn_links, 12)
             stories.append(
                 {
                     "headline": headline[:300],
@@ -935,6 +1048,7 @@ def build_record(
     sender_review: bool,
 ) -> dict:
     blob = (body or "").replace("\r\n", "\n").replace("\r", "\n")
+    extract_urls(blob)
     subj = subject or ""
     fe = (from_email or "").lower()
     is_tldr = (
@@ -1057,6 +1171,7 @@ def main() -> None:
     processed_ids = load_processed_ids()
     errors: list[str] = []
     os.makedirs(CACHE_RAW, exist_ok=True)
+    _ensure_substack_redirect_disk_cache()
 
     try:
         if IMAP_SSL:
@@ -1147,12 +1262,15 @@ def main() -> None:
         conn.logout()
 
     except imaplib.IMAP4.error as e:
+        _save_substack_redirect_disk_cache()
         print(f"ERROR: IMAP connection failed — {e}", file=sys.stderr)
         sys.exit(1)
     except OSError as e:
+        _save_substack_redirect_disk_cache()
         print(f"ERROR: network error — {e}", file=sys.stderr)
         sys.exit(1)
 
+    _save_substack_redirect_disk_cache()
     save_processed_ids(processed_ids)
     print(f"\nDone. Cache: {CACHE_RAW} | Errors: {len(errors)}")
     for e in errors:

@@ -143,9 +143,8 @@ def is_quality_story(story: dict) -> bool:
     links = story.get("links") or []
     if not links:
         return False
-    real_links = [l for l in links if "substack.com/redirect" not in (l.get("url") or "")]
-    if not real_links:
-        return False
+    # Keep stories whose only links are unresolved Substack redirects (ingest may
+    # be rate-limited); still require at least one URL-shaped link.
     return True
 
 
