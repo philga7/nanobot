@@ -20,7 +20,11 @@ DNS_TEST_DOMAIN_SECONDARY="example.com"
 ISP_GATEWAY="31.97.129.254"
 
 # ── Port Policy ───────────────────────────────────────────────────────────────
-EXPECTED_OPEN_PORTS=("22" "443" "51820")
+# Post-hardening defaults: SSH on non-standard port, HTTPS, WireGuard, HTTP (redirect).
+EXPECTED_OPEN_PORTS=("2222" "443" "51820" "80")
+
+# Docker-published ports treated as intentional when UFW is bypassed (iptables DNAT).
+ALLOWED_DOCKER_PORTS=("80" "443" "3000" "6333" "6334" "8080" "18791")
 
 # ── Alert Thresholds ──────────────────────────────────────────────────────────
 WG_STALE_THRESHOLD_S=120

@@ -19,6 +19,85 @@ json_escape() { jq -Rsa . <<<"${1:-}"; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 bool_json() { [[ "$1" == "true" ]] && echo "true" || echo "false"; }
 
+# Host-only SUID paths (excludes containerd/docker overlay snapshot trees).
+collect_host_suid_list() {
+  local line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && printf '%s\n' "$line"
+  done < <(
+    for root in /usr /bin /sbin /lib /snap; do
+      [[ -d "$root" ]] || continue
+      sudo find "$root" -xdev -type f -perm -4000 2>/dev/null || true
+    done | sort -u
+  )
+}
+
+# Active systemd timers as JSON [{unit,next_run,last_run}, ...]; prefers list-timers --output=json.
+parse_systemd_timers_json() {
+  local raw
+  if ! has_cmd systemctl; then
+    echo "[]"
+    return
+  fi
+  raw="$(systemctl list-timers --state=active --no-pager --output=json 2>/dev/null || true)"
+  if [[ -n "${raw// }" ]] && echo "$raw" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    echo "$raw" | jq '[.[] | select((.unit // "") | endswith(".timer"))
+      | {unit: .unit,
+         next_run: ((.next // .next_run // "n/a") | tostring),
+         last_run: ((.last // .last_run // "n/a") | tostring)}]'
+    return
+  fi
+  systemctl list-timers --no-legend --no-pager --state=active 2>/dev/null | python3 -c '
+import json, re, sys
+
+rows = []
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line.strip():
+        continue
+    low = line.lower()
+    if "timers listed" in low:
+        continue
+    if line.lstrip().startswith("NEXT") and "LEFT" in line and "UNIT" in line:
+        continue
+    m = re.search(r"(\S+\.timer)\s*$", line)
+    if not m:
+        continue
+    unit = m.group(1)
+    body = line[: m.start()].strip()
+    segs = [s for s in re.split(r"\s{2,}", body) if s]
+    next_run = segs[0] if segs else "n/a"
+    last_run = segs[2] if len(segs) > 2 else (segs[1] if len(segs) > 1 else "n/a")
+    rows.append({"unit": unit, "next_run": next_run, "last_run": last_run})
+print(json.dumps(rows))
+'
+}
+
+docker_port_allowed() {
+  local p="$1"
+  local a
+  for a in "${ALLOWED_DOCKER_PORTS[@]}"; do
+    [[ "$p" == "$a" ]] && return 0
+  done
+  return 1
+}
+
+# Map host-published TCP port -> first matching container name from docker ps.
+docker_container_for_published_port() {
+  local want="$1" line name ports
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    name="${line%%	*}"
+    ports="${line#*	}"
+    [[ "$name" == "$ports" ]] && continue
+    if [[ "$ports" == *"0.0.0.0:${want}->"* || "$ports" == *"[::]:${want}->"* ]]; then
+      printf '%s\n' "$name"
+      return 0
+    fi
+  done < <(sudo docker ps --no-trunc --format '{{.Names}}	{{.Ports}}' 2>/dev/null || true)
+  echo "unknown"
+}
+
 run_ping_stats() {
   local host="$1"
   local out loss avg ok
@@ -107,10 +186,17 @@ probe_wireguard() {
   if [[ "$(jq -r '.ok' <<<"$(run_ping_stats "$WG_PEER_IP")")" == "true" ]]; then peer_ok=true; fi
   psk_line="$(sudo wg show "$WG_INTERFACE" 2>/dev/null | awk -F': ' '/preshared key/{print $2; exit}')"
   [[ -n "$psk_line" && "$psk_line" != "(none)" ]] && psk_ok=true
-  local dir_perm key_perm_raw
+  local dir_perm key_perm_raw conf_perm wg_conf="/etc/wireguard/${WG_INTERFACE}.conf"
   dir_perm="$(stat -c '%a' /etc/wireguard 2>/dev/null || echo "")"
   key_perm_raw="$(stat -c '%a' /etc/wireguard/privatekey 2>/dev/null || echo "")"
-  [[ "$dir_perm" == "700" && "$key_perm_raw" == "600" ]] && key_perm=true
+  key_perm=false
+  if [[ "$dir_perm" == "700" && "$key_perm_raw" == "600" ]]; then
+    key_perm=true
+    if [[ -f "$wg_conf" ]]; then
+      conf_perm="$(stat -c '%a' "$wg_conf" 2>/dev/null || echo "")"
+      [[ "$conf_perm" == "600" ]] || key_perm=false
+    fi
+  fi
 
   jq -nc --arg ifc "$WG_INTERFACE" --arg status "$status" --argjson ago "${ago:-null}" \
     --argjson peer_ok "$peer_ok" --argjson rx "$(awk -v b="${rx:-0}" 'BEGIN{printf "%.2f", b/1024/1024}')" \
@@ -122,22 +208,38 @@ probe_wireguard() {
 
 probe_tailscale() {
   if ! has_cmd tailscale; then
-    jq -nc '{status:"not_installed",local_ip:null,funnel_reachable:false,home_node_reachable:false}'
+    jq -nc '{status:"not_installed",local_ip:null,funnel_reachable:false,home_node_reachable:false,backend_state_raw:null}'
     return
   fi
-  local status local_ip funnel=false home=false raw backend http
+  local status local_ip funnel=false home=false raw backend http backend_state_raw ip_cmd
   if ! raw="$(tailscale status --json 2>/dev/null || true)"; then
-    jq -nc '{status:"offline",local_ip:null,funnel_reachable:false,home_node_reachable:false}'
+    jq -nc '{status:"offline",local_ip:null,funnel_reachable:false,home_node_reachable:false,backend_state_raw:null}'
     return
   fi
   backend="$(jq -r '.Self.BackendState // ""' <<<"$raw")"
+  backend_state_raw="$backend"
   local_ip="$(jq -r '.Self.TailscaleIPs[0] // empty' <<<"$raw")"
-  [[ "$backend" == "Running" ]] && status="connected" || status="offline"
+  if [[ -z "$local_ip" ]]; then
+    ip_cmd="$(tailscale ip -4 2>/dev/null | head -1 | tr -d "[:space:]")"
+    local_ip="$ip_cmd"
+  fi
   http="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$TAILSCALE_FUNNEL_URL" || true)"
   [[ "$http" == "200" ]] && funnel=true
   [[ "$(jq -r '.ok' <<<"$(run_ping_stats "$TAILSCALE_HOME_IP")")" == "true" ]] && home=true
+
+  if [[ "$backend" == "Running" ]]; then
+    status="connected"
+  elif [[ -n "$local_ip" && "$home" == true ]]; then
+    status="connected"
+  elif [[ "$home" == false ]]; then
+    status="offline"
+  else
+    status="offline"
+  fi
+
   jq -nc --arg st "$status" --arg ip "$local_ip" --argjson funnel "$(bool_json "$funnel")" --argjson home "$(bool_json "$home")" \
-    '{status:$st,local_ip:(if $ip=="" then null else $ip end),funnel_reachable:$funnel,home_node_reachable:$home}'
+    --arg bsr "$backend_state_raw" \
+    '{status:$st,local_ip:(if $ip=="" then null else $ip end),funnel_reachable:$funnel,home_node_reachable:$home,backend_state_raw:(if $bsr=="" then null else $bsr end)}'
 }
 
 probe_home_network() {
@@ -184,8 +286,22 @@ probe_port_scan() {
 }
 
 probe_dns_hijacking() {
+  local system_resolvers_json trusted=false
+  system_resolvers_json="$(
+    { grep -E '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null || true; } |
+      awk '{print $2}' | jq -R . | jq -s 'map(select(length>0))'
+  )"
+  while IFS= read -r ns; do
+    [[ -z "$ns" ]] && continue
+    local tr
+    for tr in "${TRUSTED_DNS[@]}"; do
+      [[ "$ns" == "$tr" ]] && trusted=true
+    done
+  done < <(grep -E '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null | awk '{print $2}')
+
   if ! has_cmd dig; then
-    jq -nc '{status:"unknown",resolvers_checked:0,mismatches:0,details:"dig not installed",dnssec_validated:false}'
+    jq -nc --argjson sr "$system_resolvers_json" --argjson st "$(bool_json "$trusted")" \
+      '{status:"unknown",resolvers_checked:0,mismatches:0,details:"dig not installed",dnssec_validated:false,system_resolvers:$sr,system_resolver_trusted:$st}'
     return
   fi
   local checked=0 mismatch_primary=0 mismatch_secondary=0 details="" dnssec=false
@@ -217,8 +333,9 @@ probe_dns_hijacking() {
     status="suspected"
     details="Resolver answer divergence on primary and secondary domains"
   fi
-  jq -nc --arg status "$status" --argjson rc "$checked" --argjson mm "$mismatches" --arg details "$details" --argjson dnssec "$(bool_json "$dnssec")" \
-    '{status:$status,resolvers_checked:$rc,mismatches:$mm,details:(if $details=="" then null else $details end),dnssec_validated:$dnssec}'
+  jq -nc --arg status "$status" --argjson rc "$checked" --argjson mm "$mismatches" --arg details "$details" \
+    --argjson dnssec "$(bool_json "$dnssec")" --argjson sr "$system_resolvers_json" --argjson st "$(bool_json "$trusted")" \
+    '{status:$status,resolvers_checked:$rc,mismatches:$mm,details:(if $details=="" then null else $details end),dnssec_validated:$dnssec,system_resolvers:$sr,system_resolver_trusted:$st}'
 }
 
 probe_ssh_hardening() {
@@ -260,7 +377,7 @@ probe_ssh_hardening() {
 
 probe_firewall() {
   if ! has_cmd ufw; then
-    jq -nc '{status:"not_installed",default_incoming:"unknown",default_outgoing:"unknown",rules:[],unexpected_allow_rules:[],ipv6_enabled:false,ipv6_ufw_protected:false,docker_running:false,docker_bypass_detected:false,docker_exposed_ports:[],grade:"F"}'
+    jq -nc '{status:"not_installed",default_incoming:"unknown",default_outgoing:"unknown",rules:[],unexpected_allow_rules:[],ipv6_enabled:false,ipv6_ufw_protected:false,docker_running:false,docker_bypass_detected:false,docker_exposed_ports:[],docker_exposed_ports_detail:[],remediation:null,grade:"F"}'
     return
   fi
   local verbose numbered status def_in="unknown" def_out="unknown" ipv6_conf=false ipv6_addr=false docker=false bypass=false
@@ -274,11 +391,45 @@ probe_firewall() {
   [[ "$(grep -E '^IPV6=' /etc/default/ufw 2>/dev/null || true)" == *"yes"* ]] && ipv6_conf=true
   ip -6 addr show scope global 2>/dev/null | awk 'NF{found=1} END{exit !found}' && ipv6_addr=true || true
   systemctl is-active docker >/dev/null 2>&1 && docker=true
-  local docker_ports_json='[]'
+  local docker_ports_json='[]' docker_detail_json='[]' all_docker_allowed=true port cname allowed
   if [[ "$docker" == true ]]; then
     docker_ports_json="$(sudo iptables -L DOCKER -n --line-numbers 2>/dev/null | awk '/ACCEPT/ && /0.0.0.0\/0/ {for(i=1;i<=NF;i++) if($i ~ /dpt:/){split($i,a,":"); print a[2]}}' | jq -R . | jq -s 'map(select(length>0)|tonumber) | unique')"
     [[ "$(jq 'length' <<<"$docker_ports_json")" -gt 0 ]] && bypass=true
   fi
+  while IFS= read -r port; do
+    [[ -z "$port" ]] && continue
+    cname="$(docker_container_for_published_port "$port")"
+    allowed=false
+    docker_port_allowed "$port" && allowed=true
+    [[ "$allowed" == false ]] && all_docker_allowed=false
+    docker_detail_json="$(jq -n --argjson cur "${docker_detail_json:-[]}" --argjson port "$port" --arg c "$cname" \
+      --argjson al "$(bool_json "$allowed")" \
+      '$cur + [{port:$port, protocol:"tcp", container:$c, allowed:$al}]')"
+  done < <(jq -r '.[]' <<<"$docker_ports_json")
+
+  local remediation_json
+  remediation_json="$(
+    jq -n --argjson ports "$docker_ports_json" '{
+      ufw_forward: {
+        summary: "Set DEFAULT_FORWARD_POLICY=ACCEPT in /etc/default/ufw, reload UFW, then add explicit UFW route rules for each Docker-published port.",
+        steps: [
+          "Edit /etc/default/ufw: set DEFAULT_FORWARD_POLICY=ACCEPT (keeps Docker NAT working while documenting intent).",
+          "Run: sudo ufw reload",
+          "For each exposed TCP port, add a route allow, e.g.: sudo ufw route allow proto tcp from any to any port <port> comment docker-<port>",
+          ("Current Docker DNAT ports from this host: " + ($ports | map(tostring) | join(", ")))
+        ]
+      },
+      docker_iptables_false: {
+        summary: "Set \"iptables\": false in /etc/docker/daemon.json so Docker stops inserting iptables rules; manage publishes explicitly with UFW.",
+        steps: [
+          "Merge {\"iptables\": false} into /etc/docker/daemon.json and run: sudo systemctl restart docker",
+          "Recreate or restart containers with required -p publishes, then add matching sudo ufw allow ... rules for each listener that must be public",
+          "Verify with: sudo ufw status verbose && sudo iptables -L DOCKER -n"
+        ]
+      }
+    }'
+  )"
+
   local rules_json unexpected_json
   rules_json="$(awk '
     /^\[/ {next}
@@ -293,17 +444,27 @@ probe_firewall() {
   unexpected_json="$(jq -n --argjson rules "$rules_json" --argjson exp "$(printf '%s\n' "${EXPECTED_OPEN_PORTS[@]}" | jq -R . | jq -s .)" \
     '$rules | map(select(.action=="allow" and ((.port|tostring) as $p | ($exp | index($p) | not))))')"
   local grade="C"
-  if [[ "$status" != "active" || "$bypass" == true ]]; then grade="F"
-  elif [[ "$(jq 'length' <<<"$unexpected_json")" -gt 0 ]]; then grade="D"
-  elif [[ "$def_in" == "deny" && "$ipv6_addr" == true && "$ipv6_conf" == true ]]; then grade="A"
-  elif [[ "$def_in" == "deny" && "$ipv6_conf" == true ]]; then grade="B"
+  if [[ "$status" != "active" ]]; then
+    grade="F"
+  elif [[ "$(jq 'length' <<<"$unexpected_json")" -gt 0 ]]; then
+    grade="D"
+  elif [[ "$bypass" == true ]]; then
+    if [[ "$all_docker_allowed" == true ]]; then
+      grade="C"
+    else
+      grade="D"
+    fi
+  elif [[ "$def_in" == "deny" && "$ipv6_addr" == true && "$ipv6_conf" == true ]]; then
+    grade="A"
+  elif [[ "$def_in" == "deny" && "$ipv6_conf" == true ]]; then
+    grade="B"
   fi
   jq -nc --arg status "${status:-inactive}" --arg di "$def_in" --arg do "$def_out" \
     --argjson rules "$rules_json" --argjson un "$unexpected_json" \
     --argjson ipv6_enabled "$(bool_json "$ipv6_addr")" --argjson ipv6_ufw "$(bool_json "$ipv6_conf")" \
     --argjson docker "$(bool_json "$docker")" --argjson bypass "$(bool_json "$bypass")" \
-    --argjson dp "$docker_ports_json" --arg grade "$grade" \
-    '{status:$status,default_incoming:$di,default_outgoing:$do,rules:$rules,unexpected_allow_rules:$un,ipv6_enabled:$ipv6_enabled,ipv6_ufw_protected:$ipv6_ufw,docker_running:$docker,docker_bypass_detected:$bypass,docker_exposed_ports:$dp,grade:$grade}'
+    --argjson dp "$docker_ports_json" --argjson dpd "$docker_detail_json" --argjson rem "$remediation_json" --arg grade "$grade" \
+    '{status:$status,default_incoming:$di,default_outgoing:$do,rules:$rules,unexpected_allow_rules:$un,ipv6_enabled:$ipv6_enabled,ipv6_ufw_protected:$ipv6_ufw,docker_running:$docker,docker_bypass_detected:$bypass,docker_exposed_ports:$dp,docker_exposed_ports_detail:$dpd,remediation:$rem,grade:$grade}'
 }
 
 probe_tls() {
@@ -386,9 +547,12 @@ probe_outbound() {
 }
 
 probe_persistence() {
-  local prev cron_dump cron_hash prev_cron_hash cron_changed=false cron_count timers suid_list suid_hash baseline_hash new_suid='[]' suid_changed=false
+  local prev cron_dump cron_hash prev_cron_hash cron_changed=false cron_count timers_json
+  local timer_hash prev_timer_hash timer_changed=false
+  local suid_list suid_hash baseline_hash new_suid='[]' suid_changed=false
   prev="$(load_prev)"
   prev_cron_hash="$(jq -r '.persistence.cron_hash // ""' <<<"$prev")"
+  prev_timer_hash="$(jq -r '.persistence.systemd_timers_hash // ""' <<<"$prev")"
   cron_dump="$(
     { cat /etc/crontab 2>/dev/null || true; ls -la /etc/cron.d/ /etc/cron.daily/ /etc/cron.hourly/ /etc/cron.weekly/ /etc/cron.monthly/ 2>/dev/null || true;
       awk -F: '{print $1}' /etc/passwd 2>/dev/null | while read -r user; do sudo crontab -l -u "$user" 2>/dev/null || true; done; } | sort
@@ -396,10 +560,12 @@ probe_persistence() {
   cron_hash="sha256:$(sha256sum <<<"$cron_dump" | awk '{print $1}')"
   [[ -n "$prev_cron_hash" && "$prev_cron_hash" != "$cron_hash" ]] && cron_changed=true
   cron_count="$(awk 'NF{c++} END{print c+0}' <<<"$cron_dump")"
-  timers="$(systemctl list-timers --all --no-pager 2>/dev/null | awk 'NR>1 && NF>=6 {print}' | jq -R -s '
-    split("\n") | map(select(length>0)) | map({unit:(split(" ")|map(select(length>0))[5] // "unknown"),next_run:(split(" ")|map(select(length>0))[0] // "n/a"),last_run:(split(" ")|map(select(length>0))[3] // "n/a")})')"
-  suid_list="$(sudo find / -xdev -type f -perm -4000 2>/dev/null | sort || true)"
-  suid_hash="sha256:$(sha256sum <<<"$suid_list" | awk '{print $1}')"
+  timers_json="$(parse_systemd_timers_json)"
+  timer_hash="sha256:$(echo "$timers_json" | jq -c . | sha256sum | awk '{print $1}')"
+  [[ -n "$prev_timer_hash" && "$prev_timer_hash" != "$timer_hash" ]] && timer_changed=true
+
+  suid_list="$(collect_host_suid_list)"
+  suid_hash="sha256:$(printf '%s\n' "$suid_list" | sha256sum | awk '{print $1}')"
   if [[ ! -f "$SUID_BASELINE" ]]; then
     printf '%s\n' "$suid_list" >"$SUID_BASELINE"
   else
@@ -408,9 +574,10 @@ probe_persistence() {
     new_suid="$(comm -13 <(sort "$SUID_BASELINE") <(printf '%s\n' "$suid_list" | sort) | jq -R . | jq -s 'map(select(length>0))')"
   fi
   jq -nc --arg ch "$cron_hash" --argjson changed "$(bool_json "$cron_changed")" --argjson count "$cron_count" \
-    --argjson timers "$timers" --argjson suids "$(printf '%s\n' "$suid_list" | jq -R . | jq -s 'map(select(length>0))')" \
+    --argjson timers "$timers_json" --arg th "$timer_hash" --argjson tch "$(bool_json "$timer_changed")" \
+    --argjson suids "$(printf '%s\n' "$suid_list" | jq -R . | jq -s 'map(select(length>0))')" \
     --arg sh "$suid_hash" --argjson shc "$(bool_json "$suid_changed")" --argjson ns "$new_suid" \
-    '{cron_hash:$ch,cron_hash_changed:$changed,cron_entries_count:$count,systemd_timers:$timers,suid_binaries:$suids,suid_hash:$sh,suid_hash_changed:$shc,new_suid_binaries:$ns}'
+    '{cron_hash:$ch,cron_hash_changed:$changed,cron_entries_count:$count,systemd_timers:$timers,systemd_timers_hash:$th,systemd_timers_hash_changed:$tch,suid_binaries:$suids,suid_hash:$sh,suid_hash_changed:$shc,new_suid_binaries:$ns}'
 }
 
 probe_system_hygiene() {
