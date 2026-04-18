@@ -78,11 +78,39 @@ def today_str() -> str:
     return datetime.now(ZoneInfo(TZ_NAME)).strftime("%Y-%m-%d")
 
 
+def _sponsored_or_section_garbage(headline: str, summary: str) -> bool:
+    """Sponsor blocks and Neuron section titles that slip through the parser."""
+    hl = (headline or "").lower().strip()
+    sm = (summary or "").lower().strip()
+    blob = f"{hl} {sm[:220]}"
+    if sm.startswith("follow image link"):
+        return True
+    if re.search(r"\b(sponsored|brought to you by)\b", blob):
+        return True
+    neuron_junk = frozenset(
+        {
+            "treats to try",
+            "around the horn",
+            "cat's commentary",
+            "a cat's commentary",
+            "intelligent insights",
+            "ai skill of the day",
+        }
+    )
+    if hl in neuron_junk:
+        return True
+    if "unlock access" in hl and "product" in hl:
+        return True
+    return False
+
+
 def is_quality_story(story: dict) -> bool:
     """Drop parser artifacts before clustering."""
     headline = (story.get("headline") or "").lower().strip()
     summary = (story.get("summary") or "").lower().strip()
     if len(headline) < 5:
+        return False
+    if _sponsored_or_section_garbage(story.get("headline", ""), story.get("summary", "")):
         return False
     garbage_headline = (
         "unsubscribe",

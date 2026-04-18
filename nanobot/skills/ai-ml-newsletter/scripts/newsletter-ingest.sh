@@ -40,19 +40,47 @@ AI_ML_SENDERS = frozenset(
     s.lower()
     for s in [
         "theneuron@newsletter.theneurondaily.com",
+        # AINews (swyx) — Substack + legacy
+        "swyx+ainews@substack.com",
         "swyx@ainews.email",
-        # Interconnects (Substack — common From variants)
+        "ainews@substack.com",
+        # Interconnects (Nathan Lambert)
         "nathan@substack.com",
         "nwang0@substack.com",
         "hello@interconnects.ai",
         "nathan@interconnects.ai",
+        "interconnects@substack.com",
         # TLDR AI
         "dan@tldr.tech",
+        "dan@tldrnewsletter.com",
         "noreply@tldr.tech",
         "hello@tldr.tech",
-        # Add Simplifying AI / others after verifying the real From: header in IMAP.
+        "tldr@tldrnewsletter.com",
+        # Simplifying AI (Alvaro Cintas)
+        "simplifyingai@newsletter.alvarocintas.com",
+        "simplifying@substack.com",
+        # Tess Research (Tessara)
+        "hello@tessresearch.chainofthought.xyz",
         "hello@tessresearch.substack.com",
+        "tessara@substack.com",
     ]
+)
+
+AI_ML_SENDER_DOMAINS = frozenset(
+    s.lower()
+    for s in [
+        "substack.com",
+        "tldrnewsletter.com",
+        "newsletter.alvarocintas.com",
+        "chainofthought.xyz",
+        "theneurondaily.com",
+    ]
+)
+
+AI_ML_DOMAIN_SUBJECT = re.compile(
+    r"\b(ai|ml|llm|gpt|claude|gemini|openai|anthropic|neural|deep learning|"
+    r"machine learning|artificial intelligence)\b",
+    re.IGNORECASE,
 )
 
 BLOCKED_SENDERS = frozenset(
@@ -83,6 +111,15 @@ SECTION_HEADER_BLOCKLIST = frozenset(
         "top stories",
         "today's briefing",
         "reading list",
+        # The Neuron sections / sponsor-ish
+        "treats to try",
+        "around the horn",
+        "cat's commentary",
+        "a cat's commentary",
+        "intelligent insights",
+        "ai skill of the day",
+        "unlock access",
+        "your product needs",
     }
 )
 
@@ -327,18 +364,18 @@ def newsletter_label_from_sender(from_email: str) -> tuple[str, str]:
     low = from_email.lower()
     if "theneuron" in low:
         return "The Neuron", "the-neuron"
-    if "ainews.email" in low or "swyx" in low.split("@")[0]:
+    if "ainews" in low or "swyx" in low.split("@")[0] or "+ainews" in low:
         return "AINews", "ainews"
     if "interconnects" in low or low in (
         "nathan@substack.com",
         "nwang0@substack.com",
     ):
         return "Interconnects", "interconnects"
-    if "tldr.tech" in low or "readtldr" in low:
+    if "tldrnewsletter.com" in low or "tldr.tech" in low or "readtldr" in low:
         return "TLDR AI", "tldr-ai"
-    if "simplifying" in low:
+    if "alvarocintas" in low or "simplifyingai" in low or "simplifying" in low.split("@")[0]:
         return "Simplifying AI", "simplifying-ai"
-    if "tess" in low:
+    if "tessresearch" in low or "chainofthought.xyz" in low or "tessara" in low:
         return "Tess Research", "tess-research"
     dom = from_email.split("@")[-1] if "@" in from_email else "unknown"
     return dom.split(".")[0].replace("-", " ").title(), re.sub(r"[^a-z0-9]+", "-", low.split("@")[0].lower()).strip("-")
@@ -392,6 +429,132 @@ def parse_notable_apps_section(text: str) -> tuple[list[dict], str]:
     return apps, "\n".join(kept)
 
 
+_SUBSTACK_PARA_SKIP = (
+    "view this post",
+    "unsubscribe",
+    "upgrade to paid",
+    "share this post",
+)
+
+
+def _substack_boilerplate_paragraph(para: str) -> bool:
+    """AINews-style deck / date lines / long essay openers — not stories."""
+    if re.search(r"(?i)\btop story\b", para):
+        return False
+    first = para.split("\n", 1)[0].strip()
+    if re.match(r"(?i)^ai news for\b", first):
+        return True
+    if re.match(
+        r"(?i)^(in |the |when |as |but |for |on |at |while |after |before )\b",
+        first,
+    ) and len(first) > 70:
+        return True
+    return False
+
+
+def _substack_next_para_is_new_story(para: str) -> bool:
+    """True if the next paragraph should start its own item (do not merge into prior)."""
+    first = para.split("\n", 1)[0].strip()
+    fl = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", first)
+    fl = re.sub(r"^[#*\s]+", "", fl).strip()
+    if not fl or _is_section_header_headline(fl):
+        return False
+    if re.search(r"(?i)\btop story\b", fl):
+        return True
+    if extract_urls(para) and len(fl) < 120 and len(fl.split()) <= 14 and not fl.lower().startswith(
+        "http"
+    ):
+        return True
+    return False
+
+
+def _parse_substack_paragraph_stories(body: str) -> list[dict]:
+    """AINews-style dense paragraphs without --- section breaks."""
+    stories: list[dict] = []
+    paragraphs = [p.strip() for p in body.split("\n\n") if p.strip()]
+    i = 0
+    while i < len(paragraphs):
+        para = paragraphs[i]
+        if len(para) < 20:
+            i += 1
+            continue
+        para_lower = para.lower()
+        if any(p in para_lower for p in _SUBSTACK_PARA_SKIP):
+            i += 1
+            continue
+        if _substack_boilerplate_paragraph(para):
+            i += 1
+            continue
+
+        lines = para.split("\n")
+        first_line = lines[0].strip()
+        first_line_clean = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", first_line)
+        first_line_clean = re.sub(r"^[#*\s]+", "", first_line_clean).strip()
+        flc_lower = first_line_clean.lower()
+
+        if _is_section_header_headline(first_line_clean):
+            i += 1
+            continue
+
+        is_headline = (
+            len(first_line_clean) < 120
+            and not flc_lower.startswith("http")
+            and len(first_line_clean) > 5
+            and (
+                re.search(r"(?i)\btop story\b", first_line_clean)
+                or ":" in first_line_clean[:110]
+                or len(first_line_clean.split()) <= 14
+            )
+        )
+
+        if is_headline:
+            headline = first_line_clean
+            rest = "\n".join(lines[1:]).strip()
+            merge_next = (
+                i + 1 < len(paragraphs)
+                and len(rest) < 100
+                and not _substack_next_para_is_new_story(paragraphs[i + 1])
+            )
+            if merge_next:
+                url_blob = para + "\n\n" + paragraphs[i + 1]
+                summary_text = clean_summary(
+                    re.sub(r"\s+", " ", (rest + " " + paragraphs[i + 1]))[:800]
+                )
+                i += 2
+            else:
+                url_blob = para
+                summary_text = clean_summary(re.sub(r"\s+", " ", rest)[:800])
+                i += 1
+        else:
+            headline_raw = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", first_line)
+            headline = re.sub(r"^[#*\s]+", "", headline_raw).strip()[:300]
+            if len(headline) <= 5 or _is_section_header_headline(headline):
+                i += 1
+                continue
+            url_blob = para
+            summary_text = clean_summary(re.sub(r"\s+", " ", para)[:800])
+            i += 1
+
+        if _is_section_header_headline(headline):
+            continue
+        urls = extract_urls(url_blob)
+        if not urls:
+            continue
+        links = [
+            {"url": u, "context": summary_text[:200], "type": link_type_for_url(u)}
+            for u in urls[:12]
+        ]
+        stories.append(
+            {
+                "headline": headline[:300],
+                "summary": summary_text or clean_summary(headline) or headline,
+                "links": links,
+                "categories": infer_categories(headline, summary_text),
+            }
+        )
+    return stories
+
+
 def parse_substack_stories(text: str) -> tuple[list[dict], list[dict]]:
     """Parse Substack plain-text digests (AINews, Interconnects, Latent Space, etc.)."""
     stories: list[dict] = []
@@ -414,6 +577,11 @@ def parse_substack_stories(text: str) -> tuple[list[dict], list[dict]]:
         "click here",
         "read more",
     )
+
+    if len(sections) <= 1:
+        blob = sections[0].strip() if sections else ""
+        stories = _parse_substack_paragraph_stories(blob)
+        return stories, notable_apps
 
     for section in sections:
         section = section.strip()
@@ -458,7 +626,7 @@ def parse_substack_stories(text: str) -> tuple[list[dict], list[dict]]:
     return stories, notable_apps
 
 
-_TLDR_SECTION_START = re.compile(r"\n(?=🚀|💡|🔥|📊|⚡|🧠|🤖|🎯)")
+_TLDR_SECTION_START = re.compile(r"\n(?=🚀|💡|🔥|📊|⚡|🧠|🤖|🎯|🤝|💻)")
 
 
 def parse_tldr_stories(text: str) -> tuple[list[dict], list[dict]]:
@@ -466,7 +634,13 @@ def parse_tldr_stories(text: str) -> tuple[list[dict], list[dict]]:
     stories: list[dict] = []
     notable_apps: list[dict] = []
 
-    body = re.sub(r"^.*?(?=🚀|💡|🔥|📊|⚡|🧠|🤖|🎯)", "", text, count=1, flags=re.DOTALL)
+    body = re.sub(
+        r"^.*?(?=🚀|💡|🔥|📊|⚡|🧠|🤖|🎯|🤝|💻)",
+        "",
+        text,
+        count=1,
+        flags=re.DOTALL,
+    )
     if body == text:
         body = text
     body = re.sub(r"\n*Quick Links.*$", "", body, flags=re.IGNORECASE | re.DOTALL)
@@ -483,9 +657,9 @@ def parse_tldr_stories(text: str) -> tuple[list[dict], list[dict]]:
                 continue
             lines = block.split("\n")
             headline = lines[0].strip()
-            if re.match(r"^[🚀💡🔥📊⚡🧠🤖🎯]", headline) and len(lines) < 2:
+            if re.match(r"^[🚀💡🔥📊⚡🧠🤖🎯🤝💻]", headline) and len(lines) < 2:
                 continue
-            if re.match(r"^[🚀💡🔥📊⚡🧠🤖🎯]", headline) and len(headline) < 56:
+            if re.match(r"^[🚀💡🔥📊⚡🧠🤖🎯🤝💻]", headline) and len(headline) < 56:
                 if len(lines) > 1:
                     headline = lines[1].strip()
                     summary_text = "\n".join(lines[2:]).strip()
@@ -633,9 +807,11 @@ def build_record(
 ) -> dict:
     blob = body or ""
     subj = subject or ""
+    fe = (from_email or "").lower()
     is_tldr = (
         "tldr.tech" in blob.lower()
         or "readtldr.com" in blob.lower()
+        or "tldrnewsletter.com" in fe
         or "TLDR AI" in subj
     )
     is_substack = "substack.com/redirect" in blob or "View this post on the web" in blob
@@ -669,11 +845,21 @@ def build_record(
     }
 
 
+def from_email_trusted_sender(from_email: str, subject: str) -> bool:
+    fe = from_email.lower()
+    if fe in AI_ML_SENDERS:
+        return True
+    dom = fe.split("@")[-1] if "@" in fe else ""
+    if dom in AI_ML_SENDER_DOMAINS and AI_ML_DOMAIN_SUBJECT.search(subject or ""):
+        return True
+    return False
+
+
 def is_ai_ml_newsletter(from_email: str, subject: str, body: str) -> bool:
     fe = from_email.lower()
     if any(b in fe for b in BLOCKED_SENDERS):
         return False
-    if fe in AI_ML_SENDERS:
+    if from_email_trusted_sender(from_email, subject):
         return True
     if SUBJECT_AI_KEYWORDS.search(subject or ""):
         return True
@@ -802,9 +988,9 @@ def main() -> None:
                     print(f"  skip {msg_id_str} (not AI/ML newsletter filter): {subject[:50]}", flush=True)
                     continue
 
-                sender_review = from_addr.lower() not in AI_ML_SENDERS and bool(
-                    SUBJECT_AI_KEYWORDS.search(subject or "")
-                )
+                sender_review = not from_email_trusted_sender(
+                    from_addr, subject
+                ) and bool(SUBJECT_AI_KEYWORDS.search(subject or ""))
 
                 newsletter_name, slug = newsletter_label_from_sender(from_addr)
                 rec = build_record(
