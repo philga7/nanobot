@@ -83,7 +83,7 @@ def _sponsored_or_section_garbage(headline: str, summary: str) -> bool:
     hl = (headline or "").lower().strip()
     sm = (summary or "").lower().strip()
     blob = f"{hl} {sm[:220]}"
-    if sm.startswith("follow image link"):
+    if sm.startswith("follow image link") or sm.startswith("follow image:"):
         return True
     if re.search(r"\b(sponsored|brought to you by)\b", blob):
         return True

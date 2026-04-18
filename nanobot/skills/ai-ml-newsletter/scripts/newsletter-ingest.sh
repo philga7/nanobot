@@ -36,6 +36,8 @@ CACHE_RAW = os.environ.get(
     os.path.join(SKILL_ROOT, "cache", "raw") if SKILL_ROOT else os.path.expanduser("~/.wrenvps/ai-ml-newsletter/cache/raw"),
 )
 
+BODY_TEXT_DEBUG_LIMIT = 30000
+
 AI_ML_SENDERS = frozenset(
     s.lower()
     for s in [
@@ -120,6 +122,12 @@ SECTION_HEADER_BLOCKLIST = frozenset(
         "ai skill of the day",
         "unlock access",
         "your product needs",
+        "headlines & launches",
+        "deep dives & analysis",
+        "ai twitter recap",
+        "ai reddit recap",
+        "top tweets (by engagement)",
+        "links:",
     }
 )
 
@@ -336,6 +344,8 @@ def clean_summary(text: str) -> str:
     """Remove common newsletter noise from story summaries."""
     t = text or ""
     t = re.sub(r"View image:\s*\S+", "", t)
+    t = re.sub(r"Follow image link:\s*\S+", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"Follow image:\s*\S+", "", t, flags=re.IGNORECASE)
     t = re.sub(r"Click here to\s+[^.]+\.", "", t)
     t = re.sub(r"Read more\s*»?\s*$", "", t, flags=re.MULTILINE)
     t = re.sub(
@@ -468,10 +478,107 @@ def _substack_next_para_is_new_story(para: str) -> bool:
     return False
 
 
+_TLDR_MIN_READ_HEADLINE = re.compile(
+    r"\(\d+\s+MIN(?:UTE)?S?\s+READ\)",
+    re.IGNORECASE,
+)
+
+
+def _substack_line_looks_like_headline(line: str) -> bool:
+    """Short title-like line (AINews / dense Substack), not a prose sentence."""
+    s = line.strip()
+    if len(s) < 10 or len(s) >= 120:
+        return False
+    if s.startswith(("http", "[", "*")):
+        return False
+    if not s[:1].isupper():
+        return False
+    if s.endswith((".", "!", "?")):
+        return False
+    if len(s.split()) > 12:
+        return False
+    return True
+
+
+def _parse_substack_line_by_line(body: str) -> list[dict]:
+    """Substack digests with single newlines only (AINews): headline line + following prose."""
+    stories: list[dict] = []
+    lines = body.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        low = line.lower()
+        if any(p in low for p in _SUBSTACK_PARA_SKIP):
+            i += 1
+            continue
+        if _is_section_header_headline(line):
+            i += 1
+            continue
+        if re.match(r"(?i)^ai news for\b", line):
+            i += 1
+            continue
+        if re.match(
+            r"(?i)^(in |the |when |as |but |for |on |at |while |after |before )\b",
+            line,
+        ) and len(line) > 90:
+            i += 1
+            continue
+
+        is_headline = _substack_line_looks_like_headline(line)
+
+        if is_headline:
+            headline = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", line)
+            headline = re.sub(r"^[#*\s]+", "", headline).strip()
+            if len(headline) < 5 or _is_section_header_headline(headline):
+                i += 1
+                continue
+
+            desc_lines: list[str] = []
+            i += 1
+            while i < len(lines):
+                nxt = lines[i].strip()
+                if not nxt:
+                    i += 1
+                    break
+                next_is_headline = _substack_line_looks_like_headline(nxt)
+                if next_is_headline:
+                    break
+                desc_lines.append(nxt)
+                i += 1
+
+            summary = clean_summary(" ".join(desc_lines)[:800])
+            url_blob = line + " " + " ".join(desc_lines)
+            urls = extract_urls(url_blob)
+            if not urls:
+                continue
+            links = [
+                {"url": u, "context": summary[:200], "type": link_type_for_url(u)}
+                for u in urls[:12]
+            ]
+            stories.append(
+                {
+                    "headline": headline[:300],
+                    "summary": summary or clean_summary(headline) or headline,
+                    "links": links,
+                    "categories": infer_categories(headline, summary),
+                }
+            )
+        else:
+            i += 1
+
+    return stories
+
+
 def _parse_substack_paragraph_stories(body: str) -> list[dict]:
     """AINews-style dense paragraphs without --- section breaks."""
     stories: list[dict] = []
     paragraphs = [p.strip() for p in body.split("\n\n") if p.strip()]
+    if len(paragraphs) <= 2:
+        return _parse_substack_line_by_line(body)
+
     i = 0
     while i < len(paragraphs):
         para = paragraphs[i]
@@ -650,8 +757,30 @@ def parse_tldr_stories(text: str) -> tuple[list[dict], list[dict]]:
         section = section.strip()
         if not section:
             continue
-        blocks = re.split(r"\n{2,}", section)
-        for block in blocks:
+        raw_blocks = [b.strip() for b in re.split(r"\n{2,}", section)]
+        merged_blocks: list[str] = []
+        bi = 0
+        while bi < len(raw_blocks):
+            block = raw_blocks[bi]
+            if not block or len(block) < 10:
+                bi += 1
+                continue
+            is_tm = len(block) < 200 and bool(_TLDR_MIN_READ_HEADLINE.search(block))
+            if is_tm and bi + 1 < len(raw_blocks):
+                nxt = raw_blocks[bi + 1].strip()
+                nxt_tm = (
+                    nxt
+                    and len(nxt) < 200
+                    and bool(_TLDR_MIN_READ_HEADLINE.search(nxt))
+                )
+                if not nxt_tm:
+                    merged_blocks.append(block + "\n" + nxt)
+                    bi += 2
+                    continue
+            merged_blocks.append(block)
+            bi += 1
+
+        for block in merged_blocks:
             block = block.strip()
             if not block or len(block) < 30:
                 continue
@@ -676,7 +805,7 @@ def parse_tldr_stories(text: str) -> tuple[list[dict], list[dict]]:
                 continue
             if _is_section_header_headline(headline):
                 continue
-            if headline.lower() in ("links", "link", "sponsor", "sponsors"):
+            if headline.lower() in ("links", "link", "links:", "sponsor", "sponsors"):
                 continue
 
             summary_text = clean_summary(re.sub(r"\s+", " ", summary_text)[:800])
@@ -805,7 +934,7 @@ def build_record(
     subject: str,
     sender_review: bool,
 ) -> dict:
-    blob = body or ""
+    blob = (body or "").replace("\r\n", "\n").replace("\r", "\n")
     subj = subject or ""
     fe = (from_email or "").lower()
     is_tldr = (
@@ -841,7 +970,7 @@ def build_record(
         "stories": stories,
         "notable_apps_sites": notable_apps,
         "raw_links": raw_links[:500],
-        "body_text": blob[:5000],
+        "body_text": blob[:BODY_TEXT_DEBUG_LIMIT],
     }
 
 
@@ -905,7 +1034,7 @@ def merge_raw_file(path: str, new_data: dict) -> None:
             old["raw_links"] = sorted(set(old.get("raw_links", []) + new_data.get("raw_links", [])))[:500]
             bt = new_data.get("body_text")
             if bt:
-                old["body_text"] = str(bt)[:5000]
+                old["body_text"] = str(bt)[:BODY_TEXT_DEBUG_LIMIT]
             mids = list(old.get("message_ids", []))
             mid = new_data.get("message_id", "")
             if mid and mid not in mids:
@@ -915,7 +1044,7 @@ def merge_raw_file(path: str, new_data: dict) -> None:
                 json.dump(old, f, indent=2)
             return
     out = dict(new_data)
-    out["body_text"] = (new_data.get("body_text") or "")[:5000]
+    out["body_text"] = (new_data.get("body_text") or "")[:BODY_TEXT_DEBUG_LIMIT]
     out["message_ids"] = [new_data.get("message_id", "")]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
