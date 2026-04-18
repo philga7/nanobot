@@ -41,6 +41,17 @@ AI_ML_SENDERS = frozenset(
     for s in [
         "theneuron@newsletter.theneurondaily.com",
         "swyx@ainews.email",
+        # Interconnects (Substack — common From variants)
+        "nathan@substack.com",
+        "nwang0@substack.com",
+        "hello@interconnects.ai",
+        "nathan@interconnects.ai",
+        # TLDR AI
+        "dan@tldr.tech",
+        "noreply@tldr.tech",
+        "hello@tldr.tech",
+        # Add Simplifying AI / others after verifying the real From: header in IMAP.
+        "hello@tessresearch.substack.com",
     ]
 )
 
@@ -52,6 +63,27 @@ BLOCKED_SENDERS = frozenset(
         "seekingalpha",
         "morningbrew",
     ]
+)
+
+# Organizational section titles (not stories) — exact + multi-word substring match.
+SECTION_HEADER_BLOCKLIST = frozenset(
+    {
+        "stories that matter",
+        "regime snapshot",
+        "notable apps & sites",
+        "notable apps and sites",
+        "quick links",
+        "today's top ai/ml news",
+        "in today's newsletter",
+        "what we're reading",
+        "from our sponsors",
+        "sponsor",
+        "advertisement",
+        "promoted",
+        "top stories",
+        "today's briefing",
+        "reading list",
+    }
 )
 
 SUBJECT_AI_KEYWORDS = re.compile(
@@ -200,7 +232,7 @@ def extract_urls(text: str) -> list[str]:
         if "substack.com/redirect" in u and u not in seen_ss:
             seen_ss.add(u)
             substack_unique.append(u)
-    to_resolve = substack_unique[:15]
+    to_resolve = substack_unique[:80]
     resolved_map: dict[str, str] = {}
     if to_resolve:
         with ThreadPoolExecutor(max_workers=5) as ex:
@@ -263,10 +295,51 @@ def infer_categories(headline: str, summary: str) -> list[str]:
     return sorted(set(tags))[:6]
 
 
+def clean_summary(text: str) -> str:
+    """Remove common newsletter noise from story summaries."""
+    t = text or ""
+    t = re.sub(r"View image:\s*\S+", "", t)
+    t = re.sub(r"Click here to\s+[^.]+\.", "", t)
+    t = re.sub(r"Read more\s*»?\s*$", "", t, flags=re.MULTILINE)
+    t = re.sub(
+        r"Share this\s+(post|article|newsletter)[^.]*\.",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(r"Upgrade to paid[^.]*\.", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _is_section_header_headline(headline: str) -> bool:
+    h = re.sub(r"\s+", " ", (headline or "").lower().strip())
+    h = h.strip("*# ")
+    if h in SECTION_HEADER_BLOCKLIST:
+        return True
+    for block in SECTION_HEADER_BLOCKLIST:
+        if " " in block and block in h:
+            return True
+    return False
+
+
 def newsletter_label_from_sender(from_email: str) -> tuple[str, str]:
     low = from_email.lower()
     if "theneuron" in low:
         return "The Neuron", "the-neuron"
+    if "ainews.email" in low or "swyx" in low.split("@")[0]:
+        return "AINews", "ainews"
+    if "interconnects" in low or low in (
+        "nathan@substack.com",
+        "nwang0@substack.com",
+    ):
+        return "Interconnects", "interconnects"
+    if "tldr.tech" in low or "readtldr" in low:
+        return "TLDR AI", "tldr-ai"
+    if "simplifying" in low:
+        return "Simplifying AI", "simplifying-ai"
+    if "tess" in low:
+        return "Tess Research", "tess-research"
     dom = from_email.split("@")[-1] if "@" in from_email else "unknown"
     return dom.split(".")[0].replace("-", " ").title(), re.sub(r"[^a-z0-9]+", "-", low.split("@")[0].lower()).strip("-")
 
@@ -319,6 +392,137 @@ def parse_notable_apps_section(text: str) -> tuple[list[dict], str]:
     return apps, "\n".join(kept)
 
 
+def parse_substack_stories(text: str) -> tuple[list[dict], list[dict]]:
+    """Parse Substack plain-text digests (AINews, Interconnects, Latent Space, etc.)."""
+    stories: list[dict] = []
+    notable_apps, body = parse_notable_apps_section(text)
+
+    body = re.sub(
+        r"(?i)^View this post on the web at[^\n]+\n*",
+        "",
+        body,
+    )
+    body = re.sub(r"\n*Unsubscribe\s+https://substack\.com.*$", "", body, flags=re.DOTALL)
+    body = re.sub(r"\n*Upgrade to paid.*$", "", body, flags=re.DOTALL)
+
+    sections = re.split(r"\n-{3,}\n", body)
+    skip_head = (
+        "view this post",
+        "unsubscribe",
+        "upgrade to paid",
+        "share this post",
+        "click here",
+        "read more",
+    )
+
+    for section in sections:
+        section = section.strip()
+        if not section or len(section) < 40:
+            continue
+
+        header_match = re.search(r"(?m)^#{1,3}\s+(.+)$", section)
+        if header_match:
+            headline = header_match.group(1).strip().strip("*")
+            chunk = section[header_match.end() :].strip()
+        else:
+            lines = section.split("\n", 1)
+            headline = lines[0].strip()
+            chunk = lines[1].strip() if len(lines) > 1 else ""
+
+        headline = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", headline)
+        headline = re.sub(r"^[#*\s]+", "", headline).strip()
+
+        if len(headline) < 3:
+            continue
+        hl_low = headline.lower()
+        if any(p in hl_low for p in skip_head):
+            continue
+        if _is_section_header_headline(headline):
+            continue
+
+        urls = extract_urls(chunk)
+        summary = clean_summary(re.sub(r"\s+", " ", chunk)[:800])
+        links = [
+            {"url": u, "context": summary[:200], "type": link_type_for_url(u)}
+            for u in urls[:12]
+        ]
+        stories.append(
+            {
+                "headline": headline[:300],
+                "summary": summary or clean_summary(headline) or headline,
+                "links": links,
+                "categories": infer_categories(headline, summary),
+            }
+        )
+
+    return stories, notable_apps
+
+
+_TLDR_SECTION_START = re.compile(r"\n(?=🚀|💡|🔥|📊|⚡|🧠|🤖|🎯)")
+
+
+def parse_tldr_stories(text: str) -> tuple[list[dict], list[dict]]:
+    """Parse TLDR AI-style emoji sections and bullet blocks."""
+    stories: list[dict] = []
+    notable_apps: list[dict] = []
+
+    body = re.sub(r"^.*?(?=🚀|💡|🔥|📊|⚡|🧠|🤖|🎯)", "", text, count=1, flags=re.DOTALL)
+    if body == text:
+        body = text
+    body = re.sub(r"\n*Quick Links.*$", "", body, flags=re.IGNORECASE | re.DOTALL)
+
+    sections = _TLDR_SECTION_START.split(body)
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+        blocks = re.split(r"\n{2,}", section)
+        for block in blocks:
+            block = block.strip()
+            if not block or len(block) < 30:
+                continue
+            lines = block.split("\n")
+            headline = lines[0].strip()
+            if re.match(r"^[🚀💡🔥📊⚡🧠🤖🎯]", headline) and len(lines) < 2:
+                continue
+            if re.match(r"^[🚀💡🔥📊⚡🧠🤖🎯]", headline) and len(headline) < 56:
+                if len(lines) > 1:
+                    headline = lines[1].strip()
+                    summary_text = "\n".join(lines[2:]).strip()
+                else:
+                    continue
+            else:
+                summary_text = "\n".join(lines[1:]).strip()
+
+            headline = re.sub(r"\s*\[link\]\s*$", "", headline, flags=re.IGNORECASE)
+            headline = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", headline)
+            headline = headline.strip("*# ")
+
+            if len(headline) < 5:
+                continue
+            if _is_section_header_headline(headline):
+                continue
+            if headline.lower() in ("links", "link", "sponsor", "sponsors"):
+                continue
+
+            summary_text = clean_summary(re.sub(r"\s+", " ", summary_text)[:800])
+            urls = extract_urls(block)
+            links = [
+                {"url": u, "context": summary_text[:200], "type": link_type_for_url(u)}
+                for u in urls[:12]
+            ]
+            stories.append(
+                {
+                    "headline": headline[:300],
+                    "summary": summary_text or clean_summary(headline) or headline,
+                    "links": links,
+                    "categories": infer_categories(headline, summary_text),
+                }
+            )
+
+    return stories, notable_apps
+
+
 def parse_stories_the_neuron_style(text: str) -> tuple[list[dict], list[dict]]:
     """Markdown H1–H3 sections, numbered lists, and/or paragraph blocks with URLs."""
     stories: list[dict] = []
@@ -338,9 +542,11 @@ def parse_stories_the_neuron_style(text: str) -> tuple[list[dict], list[dict]]:
             chunk = header_chunks[i + 1].strip() if i + 1 < len(header_chunks) else ""
             if len(headline_raw) < 3:
                 continue
-            urls = extract_urls(chunk)
-            summary = re.sub(r"\s+", " ", chunk)[:800]
             headline_clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", headline_raw)
+            if _is_section_header_headline(headline_clean):
+                continue
+            urls = extract_urls(chunk)
+            summary = clean_summary(re.sub(r"\s+", " ", chunk)[:800])
             links = [
                 {"url": u, "context": summary[:200], "type": link_type_for_url(u)}
                 for u in urls[:12]
@@ -348,7 +554,7 @@ def parse_stories_the_neuron_style(text: str) -> tuple[list[dict], list[dict]]:
             stories.append(
                 {
                     "headline": headline_clean[:300],
-                    "summary": summary or headline_clean,
+                    "summary": summary or clean_summary(headline_clean) or headline_clean,
                     "links": links,
                     "categories": infer_categories(headline_clean, summary),
                 }
@@ -363,17 +569,19 @@ def parse_stories_the_neuron_style(text: str) -> tuple[list[dict], list[dict]]:
             chunk = m.group(3).strip()
             if len(headline) < 3:
                 continue
+            if _is_section_header_headline(headline):
+                continue
             urls = extract_urls(chunk)
             if not urls and len(chunk) < 20:
                 continue
-            summary = re.sub(r"\s+", " ", chunk)[:800]
+            summary = clean_summary(re.sub(r"\s+", " ", chunk)[:800])
             links = []
             for u in urls[:12]:
                 links.append({"url": u, "context": summary[:200], "type": link_type_for_url(u)})
             stories.append(
                 {
                     "headline": headline[:300],
-                    "summary": summary or headline,
+                    "summary": summary or clean_summary(headline) or headline,
                     "links": links,
                     "categories": infer_categories(headline, summary),
                 }
@@ -393,8 +601,10 @@ def parse_stories_the_neuron_style(text: str) -> tuple[list[dict], list[dict]]:
             first = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", first)
             if len(first) > 160:
                 first = first[:157] + "..."
+            if _is_section_header_headline(first):
+                continue
             rest = blk[len(first) :].strip() if len(blk) > len(first) else blk
-            summary = re.sub(r"\s+", " ", rest)[:800]
+            summary = clean_summary(re.sub(r"\s+", " ", rest)[:800])
             links = [
                 {"url": u, "context": summary[:200], "type": link_type_for_url(u)}
                 for u in urls[:12]
@@ -402,7 +612,7 @@ def parse_stories_the_neuron_style(text: str) -> tuple[list[dict], list[dict]]:
             stories.append(
                 {
                     "headline": first,
-                    "summary": summary or first,
+                    "summary": summary or clean_summary(first) or first,
                     "links": links,
                     "categories": infer_categories(first, summary),
                 }
@@ -421,8 +631,30 @@ def build_record(
     subject: str,
     sender_review: bool,
 ) -> dict:
-    stories, notable_apps = parse_stories_the_neuron_style(body)
-    raw_links = extract_urls(body)
+    blob = body or ""
+    subj = subject or ""
+    is_tldr = (
+        "tldr.tech" in blob.lower()
+        or "readtldr.com" in blob.lower()
+        or "TLDR AI" in subj
+    )
+    is_substack = "substack.com/redirect" in blob or "View this post on the web" in blob
+
+    if is_tldr:
+        stories, notable_apps = parse_tldr_stories(blob)
+        if not stories:
+            stories, notable_apps = parse_stories_the_neuron_style(blob)
+    elif is_substack:
+        stories, notable_apps = parse_substack_stories(blob)
+        if not stories:
+            stories, notable_apps = parse_stories_the_neuron_style(blob)
+    else:
+        stories, notable_apps = parse_stories_the_neuron_style(blob)
+
+    for st in stories:
+        st["summary"] = clean_summary(st.get("summary") or "")
+
+    raw_links = extract_urls(blob)
     return {
         "newsletter": newsletter_name,
         "date": date_str,
@@ -433,6 +665,7 @@ def build_record(
         "stories": stories,
         "notable_apps_sites": notable_apps,
         "raw_links": raw_links[:500],
+        "body_text": blob[:5000],
     }
 
 
@@ -484,6 +717,9 @@ def merge_raw_file(path: str, new_data: dict) -> None:
                     old.setdefault("notable_apps_sites", []).append(a)
                     seen_a.add(u)
             old["raw_links"] = sorted(set(old.get("raw_links", []) + new_data.get("raw_links", [])))[:500]
+            bt = new_data.get("body_text")
+            if bt:
+                old["body_text"] = str(bt)[:5000]
             mids = list(old.get("message_ids", []))
             mid = new_data.get("message_id", "")
             if mid and mid not in mids:
@@ -493,6 +729,7 @@ def merge_raw_file(path: str, new_data: dict) -> None:
                 json.dump(old, f, indent=2)
             return
     out = dict(new_data)
+    out["body_text"] = (new_data.get("body_text") or "")[:5000]
     out["message_ids"] = [new_data.get("message_id", "")]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)

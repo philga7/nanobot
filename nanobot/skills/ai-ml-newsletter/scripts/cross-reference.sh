@@ -78,6 +78,49 @@ def today_str() -> str:
     return datetime.now(ZoneInfo(TZ_NAME)).strftime("%Y-%m-%d")
 
 
+def is_quality_story(story: dict) -> bool:
+    """Drop parser artifacts before clustering."""
+    headline = (story.get("headline") or "").lower().strip()
+    summary = (story.get("summary") or "").lower().strip()
+    if len(headline) < 5:
+        return False
+    garbage_headline = (
+        "unsubscribe",
+        "view this post",
+        "click here",
+        "upgrade to paid",
+        "share this",
+        "navigation",
+        "read on the web",
+        "disable_email",
+        "action/disable",
+    )
+    if any(p in headline for p in garbage_headline):
+        return False
+    if headline in ("links", "link", "sponsor", "sponsors"):
+        return False
+    garbage_summary = (
+        "unsubscribe",
+        "view this post",
+        "click here",
+        "upgrade to paid",
+        "share this",
+        "navigation",
+        "read on the web",
+        "disable_email",
+        "action/disable",
+    )
+    if any(p in summary[:100] for p in garbage_summary):
+        return False
+    links = story.get("links") or []
+    if not links:
+        return False
+    real_links = [l for l in links if "substack.com/redirect" not in (l.get("url") or "")]
+    if not real_links:
+        return False
+    return True
+
+
 def normalize_url(url: str) -> str:
     u = (url or "").strip()
     if not u:
@@ -500,6 +543,8 @@ def main() -> int:
             flat.append({**s, "_newsletter": nl, "_date": dt, "_raw_path": path})
         for a in raw.get("notable_apps_sites") or []:
             all_apps.append({**a, "_newsletter": nl})
+
+    flat = [s for s in flat if is_quality_story(s)]
 
     clusters = cluster_stories(flat) if flat else []
     merged_stories: list[dict] = []
