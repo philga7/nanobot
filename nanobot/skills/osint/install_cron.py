@@ -29,7 +29,7 @@ def main() -> int:
     parser.add_argument(
         "--replace",
         action="store_true",
-        help="Remove existing osint-intel / osint-investing / osint-weather jobs, then add",
+        help="Remove existing osint-* desk jobs, then add",
     )
     parser.add_argument("--timezone", default="America/New_York")
     parser.add_argument(
@@ -46,6 +46,11 @@ def main() -> int:
         "--weather-cron",
         default=os.getenv("OSINT_BRIEFING_CRON_WEATHER", "0 6,16 * * *"),
         help="Cron expr for weather desk (default: 06:00 and 16:00 ET daily)",
+    )
+    parser.add_argument(
+        "--live-feed-cron",
+        default=os.getenv("OSINT_BRIEFING_CRON_LIVE_FEED", "*/30 * * * *"),
+        help="Cron expr for live-feed desk (default: every 30 minutes)",
     )
     args = parser.parse_args()
 
@@ -82,11 +87,20 @@ def main() -> int:
         "Use the brief format from the OSINT skill docs — focus on forecast model "
         "agreement, precipitation, and any alerts for your area. If no alerts, say so explicitly."
     )
+    live_feed_msg = (
+        "Run the live-feed desk: execute "
+        f"`cd {skill} && bash deliver.sh --live-feed --json /tmp/osint_live_feed.json`, "
+        "read the output, post new items to #live-feed (C0ALXXXXXXX), "
+        "cross-post scored items to #breaking-news (C0AFVM42G4B), and send ntfy "
+        "for HIGH/BREAKING items during waking hours (7 AM–11 PM ET). "
+        "Update news_history.json with all new items."
+    )
 
     planned = [
         ("osint-intel", args.intel_cron, intel_msg),
         ("osint-investing", args.investing_cron, investing_msg),
         ("osint-weather", args.weather_cron, weather_msg),
+        ("osint-live-feed", args.live_feed_cron, live_feed_msg),
     ]
 
     print(f"Workspace: {workspace}")

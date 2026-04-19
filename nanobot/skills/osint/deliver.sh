@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BRIEF_SCRIPT="${SCRIPT_DIR}/brief.sh"
+LIVE_FEED_SCRIPT="${SCRIPT_DIR}/live-feed.sh"
 
 INTEL_DIR="${HOME}/.wrenvps/intel"
 INTEL_TOPICS="${INTEL_DIR}/config/topics.json"
@@ -15,6 +16,7 @@ TEMPLATE="${OSINT_BRIEFING_TEMPLATE:-intelSignal}"
 CHANNEL_ID="${OSINT_BRIEFING_SLACK_CHANNEL_ID:-C0AGWCQ1ZDE}"
 DESK="${OSINT_DESK:-intel}"
 CHANNEL_OVERRIDE=false
+LIVE_FEED_MODE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +43,11 @@ while [[ $# -gt 0 ]]; do
       CHANNEL_OVERRIDE=true
       shift 2
       ;;
+    --live-feed)
+      LIVE_FEED_MODE=true
+      DESK="live-feed"
+      shift
+      ;;
     *)
       echo "deliver.sh: unknown option: $1" >&2
       exit 1
@@ -53,6 +60,43 @@ if [[ -n "$JSON_OUT" && "$DRY_RUN" == "true" ]]; then
   exit 1
 fi
 
+post_slack_message() {
+  local channel="$1"
+  local text="$2"
+  [[ -n "${NANOBOT_CHANNELS__SLACK__BOT_TOKEN:-}" && -n "$channel" ]] || return 0
+  local payload code
+  payload="$(jq -nc --arg channel "$channel" --arg text "$text" '{channel:$channel,text:$text}')"
+  code="$(
+    curl -sS -o /tmp/osint_slack_resp.json -w "%{http_code}" \
+      -X POST "https://slack.com/api/chat.postMessage" \
+      -H "Authorization: Bearer ${NANOBOT_CHANNELS__SLACK__BOT_TOKEN}" \
+      -H "Content-Type: application/json; charset=utf-8" \
+      --data "$payload" || echo "000"
+  )"
+  if [[ "$code" != "200" ]] || ! jq -e '.ok == true' /tmp/osint_slack_resp.json >/dev/null 2>&1; then
+    echo "OSINT deliver: Slack post failed (HTTP ${code})" >&2
+    jq -c '.' /tmp/osint_slack_resp.json 2>/dev/null >&2 || true
+  fi
+  rm -f /tmp/osint_slack_resp.json
+}
+
+post_ntfy_message() {
+  local title="$1"
+  local body="$2"
+  [[ -n "${NTFY_URL:-}" && -n "${NTFY_TOPIC:-}" ]] || return 0
+  local ntfy_target auth_header=()
+  ntfy_target="${NTFY_URL%/}/${NTFY_TOPIC}"
+  if [[ -n "${NTFY_TOKEN:-}" ]]; then
+    auth_header=(-H "Authorization: Bearer ${NTFY_TOKEN}")
+  fi
+  curl -sS --max-time 10 \
+    -H "X-Title: ${title}" \
+    -H "X-Priority: high" \
+    "${auth_header[@]}" \
+    -d "$body" \
+    "$ntfy_target" >/dev/null || true
+}
+
 # Load optional env files: legacy osint/.env first, then intel/config/.env (canonical overrides)
 for _osint_env in "${HOME}/.wrenvps/osint/.env" "${HOME}/.wrenvps/intel/config/.env"; do
   if [[ -f "$_osint_env" ]]; then
@@ -62,6 +106,78 @@ for _osint_env in "${HOME}/.wrenvps/osint/.env" "${HOME}/.wrenvps/intel/config/.
     set +a
   fi
 done
+
+if [[ "$LIVE_FEED_MODE" == "true" ]]; then
+  if [[ ! -x "$LIVE_FEED_SCRIPT" ]]; then
+    echo "OSINT deliver: missing executable live-feed.sh at ${LIVE_FEED_SCRIPT}" >&2
+    exit 1
+  fi
+
+  lf_json_path="${JSON_OUT:-/tmp/osint_live_feed.json}"
+  bash "$LIVE_FEED_SCRIPT" $([[ "$FORCE" == "true" ]] && echo "--force") $([[ "$DRY_RUN" == "true" ]] && echo "--dry-run") --json "$lf_json_path" >/dev/null
+  lf_json="$(jq -c . "$lf_json_path" 2>/dev/null || echo '{}')"
+
+  if [[ -n "$JSON_OUT" ]]; then
+    printf '%s\n' "$JSON_OUT"
+    exit 0
+  fi
+
+  live_channel="${OSINT_LIVE_FEED_SLACK_CHANNEL_ID:-C0ALXXXXXXX}"
+  breaking_channel="${OSINT_BREAKING_NEWS_SLACK_CHANNEL_ID:-C0AFVM42G4B}"
+  if [[ "$CHANNEL_OVERRIDE" == "true" ]]; then
+    live_channel="$CHANNEL_ID"
+  fi
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo "$lf_json" | jq .
+    exit 0
+  fi
+
+  message="$(
+    echo "$lf_json" | jq -r '
+      . as $root
+      | ($root.swept_at // "" | sub("T"; " ") | sub("Z$"; " UTC")) as $ts
+      | "🔴 LIVE FEED | " + $ts + "\n\n"
+        + ((.items // [])[:20]
+          | map(.urgency + " | " + (.title // "(no title)"))
+          | join("\n"))
+        + "\n\nSources: CFP (" + (((.items // []) | map(select(.source == "citizen-free-press")) | length) | tostring)
+        + ") | Twitter (" + (((.items // []) | map(select(.type == "twitter")) | length) | tostring) + ")"
+    '
+  )"
+  if [[ -n "$message" ]]; then
+    post_slack_message "$live_channel" "$message"
+  fi
+
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    cp_msg="$(echo "$item" | jq -r '
+      "⚡ CROSS-POST from #live-feed | Score " + ((.score // 0 | tostring)) + "\n\n"
+      + (.title // "(no title)") + "\n"
+      + (.url // "") + "\n\n"
+      + "Topic tags: " + ((.topic_tags // []) | join(", "))
+      + " | Source: " + (.source // "") + " (" + (.source_tier // "unknown") + ")"
+    ')"
+    post_slack_message "$breaking_channel" "$cp_msg"
+  done < <(echo "$lf_json" | jq -c '.cross_post_items[]?')
+
+  ny_hour="$(TZ=America/New_York date +%H)"
+  waking_ok=true
+  if (( 10#$ny_hour < 7 || 10#$ny_hour >= 23 )); then
+    waking_ok=false
+  fi
+  if [[ "$waking_ok" == "true" ]]; then
+    while IFS= read -r item; do
+      [[ -n "$item" ]] || continue
+      n_title="$(echo "$item" | jq -r '"LIVE FEED - " + ((.title // "Item") | .[0:70])')"
+      n_body="$(echo "$item" | jq -r '(.title // "(no title)") + " [" + (.source // "source") + "]"')"
+      post_ntfy_message "$n_title" "$n_body"
+    done < <(echo "$lf_json" | jq -c '.ntfy_items[]?')
+  fi
+
+  echo "OSINT deliver: desk=live-feed channel=${live_channel}" >&2
+  exit 0
+fi
 
 desk_json="{}"
 desk_api_json="[]"
@@ -755,34 +871,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
   exit 0
 fi
 
-if [[ -n "${NANOBOT_CHANNELS__SLACK__BOT_TOKEN:-}" && -n "${CHANNEL_ID:-}" ]]; then
-  payload="$(jq -nc --arg channel "$CHANNEL_ID" --arg text "$body" '{channel:$channel,text:$text}')"
-  code="$(
-    curl -sS -o /tmp/osint_slack_resp.json -w "%{http_code}" \
-      -X POST "https://slack.com/api/chat.postMessage" \
-      -H "Authorization: Bearer ${NANOBOT_CHANNELS__SLACK__BOT_TOKEN}" \
-      -H "Content-Type: application/json; charset=utf-8" \
-      --data "$payload" || echo "000"
-  )"
-  if [[ "$code" != "200" ]] || ! jq -e '.ok == true' /tmp/osint_slack_resp.json >/dev/null 2>&1; then
-    echo "OSINT deliver: Slack post failed (HTTP ${code})" >&2
-    jq -c '.' /tmp/osint_slack_resp.json 2>/dev/null >&2 || true
-  fi
-  rm -f /tmp/osint_slack_resp.json
-fi
-
-if [[ -n "${NTFY_URL:-}" && -n "${NTFY_TOPIC:-}" ]]; then
-  ntfy_target="${NTFY_URL%/}/${NTFY_TOPIC}"
-  auth_header=()
-  if [[ -n "${NTFY_TOKEN:-}" ]]; then
-    auth_header=(-H "Authorization: Bearer ${NTFY_TOKEN}")
-  fi
-  curl -sS --max-time 10 \
-    -H "X-Title: OSINT Briefing" \
-    -H "X-Markdown: true" \
-    "${auth_header[@]}" \
-    -d "$body" \
-    "$ntfy_target" >/dev/null || true
-fi
+post_slack_message "$CHANNEL_ID" "$body"
+post_ntfy_message "OSINT Briefing" "$body"
 
 echo "OSINT deliver: desk=${DESK} template=${TEMPLATE} channel=${CHANNEL_ID}" >&2
