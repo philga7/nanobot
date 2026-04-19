@@ -113,7 +113,7 @@ for script in "${SOURCES_DIR}"/*.sh; do
   if [[ "$FLAG" == "--force" ]]; then
     stale+=("$script")
   elif [[ -f "$cache_file" ]]; then
-    file_age=$(( $(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0) ))
+    file_age=$(( $(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0) ))
     if (( file_age < CACHE_MAX_AGE )); then
       fresh+=("$name")
     else
@@ -320,8 +320,28 @@ if [[ -d "$INTEL_CACHE_TWITTER" ]] && command -v jq >/dev/null 2>&1; then
   fi
 fi
 
-# Optional cross-desk dedup: skip RSS/Twitter rows already posted to live-feed or breaking-news.
-if [[ "$DESK" == "intel" ]] && [[ -f "$INTEL_HISTORY" ]] && command -v jq >/dev/null 2>&1; then
+# Optional global dedup: skip RSS/Twitter rows already recorded in news_history.json.
+DEDUP_PY_BRIEF="${SCRIPT_DIR}/sources/dedup.py"
+if [[ -x "$DEDUP_PY_BRIEF" ]]; then
+  rss_items_json="$(
+    echo "$rss_items_json" | jq -c '.[]?' 2>/dev/null | while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+      key="$(echo "$row" | jq -r '(.guid // .id // .url // .link // "") | tostring' 2>/dev/null)"
+      [[ -n "$key" && "$key" != "" && "$key" != "null" ]] || continue
+      chk="$(python3 "$DEDUP_PY_BRIEF" --history "$INTEL_HISTORY" --check "$key" 2>/dev/null || true)"
+      [[ "$(printf '%s' "$chk" | tr -d '\r\n')" == "new" ]] && printf '%s\n' "$row"
+    done | jq -s '.' 2>/dev/null || echo "$rss_items_json"
+  )"
+  twitter_items_json="$(
+    echo "$twitter_items_json" | jq -c '.[]?' 2>/dev/null | while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+      key="$(echo "$row" | jq -r '(.tweet_id // .id // .url // "") | tostring' 2>/dev/null)"
+      [[ -n "$key" && "$key" != "" && "$key" != "null" ]] || continue
+      chk="$(python3 "$DEDUP_PY_BRIEF" --history "$INTEL_HISTORY" --check "$key" 2>/dev/null || true)"
+      [[ "$(printf '%s' "$chk" | tr -d '\r\n')" == "new" ]] && printf '%s\n' "$row"
+    done | jq -s '.' 2>/dev/null || echo "$twitter_items_json"
+  )"
+elif [[ -f "$INTEL_HISTORY" ]] && command -v jq >/dev/null 2>&1; then
   seen_keys="$(
     jq -c '
       to_entries
