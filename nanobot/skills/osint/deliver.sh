@@ -8,6 +8,8 @@ LIVE_FEED_SCRIPT="${SCRIPT_DIR}/live-feed.sh"
 INTEL_DIR="${HOME}/.wrenvps/intel"
 INTEL_TOPICS="${INTEL_DIR}/config/topics.json"
 INTEL_SOURCES_CFG="${INTEL_DIR}/config/sources.json"
+DEDUP_PY="${SCRIPT_DIR}/sources/dedup.py"
+HISTORY_PATH="${INTEL_DIR}/history/news_history.json"
 
 FORCE=false
 DRY_RUN="${DRY_RUN:-false}"
@@ -1042,5 +1044,24 @@ fi
 
 post_slack_message "$CHANNEL_ID" "$body"
 post_ntfy_message "OSINT Briefing" "$body"
+
+# --- Global dedup: register all posted items in news_history.json ---
+if [[ -x "$DEDUP_PY" ]] && [[ "$DRY_RUN" != "true" ]] && [[ "$DESK" != "live-feed" ]]; then
+  if [[ -n "${brief_json:-}" ]]; then
+    echo "$brief_json" | jq -c '.rss[]? // empty' 2>/dev/null | while IFS= read -r row; do
+      key="$(echo "$row" | jq -r '(.guid // .id // .url // .link // "") | tostring' 2>/dev/null)"
+      [[ -n "$key" && "$key" != "" && "$key" != "null" ]] || continue
+      payload="$(echo "$row" | jq -c --arg k "$key" --arg desk "$DESK" --arg ch "#${DESK}" '{key:$k,first_seen:(.pub_date//.pubDate//null),source:(.feed_title//.source//null),source_type:"rss",title:.title,desks:[$desk],channels:[$ch]}')"
+      printf '%s\n' "$payload" | python3 "$DEDUP_PY" --history "$HISTORY_PATH" --add - >/dev/null 2>&1 || true
+    done
+    echo "$brief_json" | jq -c '.twitter[]? // empty' 2>/dev/null | while IFS= read -r row; do
+      key="$(echo "$row" | jq -r '(.tweet_id // .id // .url // "") | tostring' 2>/dev/null)"
+      [[ -n "$key" && "$key" != "" && "$key" != "null" ]] || continue
+      payload="$(echo "$row" | jq -c --arg k "$key" --arg desk "$DESK" --arg ch "#${DESK}" '{key:$k,source:(.handle//.screen_name//.account//null),source_type:"twitter",title:(.text//.content//.full_text//null),desks:[$desk],channels:[$ch]}')"
+      printf '%s\n' "$payload" | python3 "$DEDUP_PY" --history "$HISTORY_PATH" --add - >/dev/null 2>&1 || true
+    done
+    python3 "$DEDUP_PY" --history "$HISTORY_PATH" --prune 7 >/dev/null 2>&1 || true
+  fi
+fi
 
 echo "OSINT deliver: desk=${DESK} template=${TEMPLATE} channel=${CHANNEL_ID}" >&2
