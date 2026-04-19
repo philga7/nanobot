@@ -10,7 +10,7 @@ INTEL_TOPICS="${INTEL_DIR}/config/topics.json"
 INTEL_SOURCES_CFG="${INTEL_DIR}/config/sources.json"
 
 FORCE=false
-DRY_RUN=false
+DRY_RUN="${DRY_RUN:-false}"
 JSON_OUT=""
 TEMPLATE="${OSINT_BRIEFING_TEMPLATE:-intelSignal}"
 CHANNEL_ID="${OSINT_BRIEFING_SLACK_CHANNEL_ID:-C0AGWCQ1ZDE}"
@@ -95,6 +95,65 @@ post_ntfy_message() {
     "${auth_header[@]}" \
     -d "$body" \
     "$ntfy_target" >/dev/null || true
+}
+
+# ISO briefing time (…T…Z) → "19 Apr 2026, 2:00 PM ET" for PDB titles (America/New_York).
+iso_to_et_line() {
+  local tst="${1:-}"
+  if [[ -z "$tst" || "$tst" == "unknown" ]]; then
+    printf '%s\n' "$tst"
+    return
+  fi
+  local py=""
+  for candidate in \
+    "${SCRIPT_DIR}/../../../.venv/bin/python" \
+    "${SCRIPT_DIR}/../../../../.venv/bin/python" \
+    "$(command -v python3 2>/dev/null)"; do
+    if [[ -x "$candidate" ]]; then
+      py="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$py" ]]; then
+    printf '%s\n' "$tst"
+    return
+  fi
+  "$py" - "$tst" <<'PY'
+import sys
+from datetime import datetime, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # type: ignore[misc,assignment]
+
+def main(ts: str) -> str:
+    ts = (ts or "").strip()
+    if not ts or ts == "unknown":
+        return ts
+    if ZoneInfo is None:
+        return ts
+    try:
+        if ts.endswith("Z") and "T" in ts:
+            dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        else:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        et = dt.astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        return ts
+    months = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+    h = et.hour % 12
+    if h == 0:
+        h = 12
+    ampm = "AM" if et.hour < 12 else "PM"
+    return f"{et.day} {months[et.month - 1]} {et.year}, {h}:{et.minute:02d} {ampm} ET"
+
+
+if __name__ == "__main__":
+    print(main(sys.argv[1]))
+PY
 }
 
 # Load optional env files: legacy osint/.env first, then intel/config/.env (canonical overrides)
@@ -477,16 +536,32 @@ fi
 
 # --- KEY INDICATORS + aggregated Data: line ---
 KEY_INDICATORS_JQ="${SCRIPT_DIR}/key-indicators.jq"
+pdb_mode_arg="0"
+if [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]]; then
+  pdb_mode_arg="1"
+fi
 api_section=""
 data_status=""
+pdb_key_block=""
+pdb_promoted_sections_json="[]"
+pdb_data_notes=""
+ki="{}"
 if [[ -f "$KEY_INDICATORS_JQ" ]]; then
   ki="$(
     echo "$brief_json" | jq -c -f "$KEY_INDICATORS_JQ" \
       --argjson desk_api "$desk_api_json" \
-      --argjson geo_filter "$geo_filter_json" 2>/dev/null || echo '{"indicator_lines":[],"data_status":null}'
+      --argjson geo_filter "$geo_filter_json" \
+      --arg pdb_mode "$pdb_mode_arg" \
+      2>/dev/null || echo '{"indicator_lines":[],"data_status":null,"pdb_key_indicator_lines":[],"pdb_promoted_sections":[],"pdb_data_notes":null}'
   )"
-  api_section="$(echo "$ki" | jq -r '.indicator_lines[]?' 2>/dev/null || true)"
-  data_status="$(echo "$ki" | jq -r '.data_status // empty' 2>/dev/null || true)"
+  if [[ "$pdb_mode_arg" == "1" ]]; then
+    pdb_key_block="$(echo "$ki" | jq -r '(.pdb_key_indicator_lines // []) | join("\n")' 2>/dev/null || true)"
+    pdb_promoted_sections_json="$(echo "$ki" | jq -c '.pdb_promoted_sections // []' 2>/dev/null || echo '[]')"
+    pdb_data_notes="$(echo "$ki" | jq -r '.pdb_data_notes // empty' 2>/dev/null || true)"
+  else
+    api_section="$(echo "$ki" | jq -r '.indicator_lines[]?' 2>/dev/null || true)"
+    data_status="$(echo "$ki" | jq -r '.data_status // empty' 2>/dev/null || true)"
+  fi
 fi
 
 # --- PRECIOUS METALS (investing desk) ---
@@ -783,7 +858,17 @@ fi
 # --- Title / template ---
 case "$TEMPLATE" in
   breakingBullet)
-    title=":rotating_light: BREAKING BULLET | OSINT Brief"
+    case "$DESK" in
+      intel)
+        title="**INTEL SIGNAL — $(iso_to_et_line "$timestamp")**"
+        ;;
+      balikatan)
+        title="**BALIKATAN BRIEF — $(iso_to_et_line "$timestamp")**"
+        ;;
+      *)
+        title=":rotating_light: BREAKING BULLET | OSINT Brief"
+        ;;
+    esac
     ;;
   *)
     case "$DESK" in
@@ -793,6 +878,12 @@ case "$TEMPLATE" in
       weather)
         title=":cloud: WEATHER DESK | OSINT Brief"
         ;;
+      intel)
+        title="**INTEL SIGNAL — $(iso_to_et_line "$timestamp")**"
+        ;;
+      balikatan)
+        title="**BALIKATAN BRIEF — $(iso_to_et_line "$timestamp")**"
+        ;;
       *)
         title=":satellite: INTEL SIGNAL | OSINT Brief"
         ;;
@@ -801,69 +892,147 @@ case "$TEMPLATE" in
 esac
 
 # --- Compose body ---
-body="${title}
+if [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]]; then
+  source_health_line="$(
+    echo "$brief_json" | jq -r --argjson apis "$desk_api_json" '
+      def in_desk($k):
+        ($k | ascii_downcase | gsub("-"; "_")) as $kn
+        | if ($apis | length) == 0 then true else ($apis | index($kn) != null) end;
+      (.sources // {})
+      | [
+          to_entries[]?
+          | select(in_desk(.key))
+          | select(.value.error or .value.degraded == true)
+          | (.key | gsub("_"; " ") | ascii_upcase)
+        ]
+      | if length == 0 then "All sources operational"
+        else "\(length) degraded (\(join(", ")))"
+        end
+    ' 2>/dev/null || echo "All sources operational"
+  )"
+  elevated_watch_topics=""
+  if [[ -n "$topic_weights_key" ]] && [[ -f "$INTEL_TOPICS" ]]; then
+    elevated_watch_topics="$(
+      jq -r --arg k "$topic_weights_key" '
+        (.[$k] // {})
+        | to_entries
+        | map(select(.value >= 1.3))
+        | map(.key | ascii_downcase)
+        | join(" · ")
+      ' "$INTEL_TOPICS" 2>/dev/null || true
+    )"
+  fi
+  topic_bundle="$(
+    echo "$brief_json" | jq -c -f "${SCRIPT_DIR}/intel-pdb-topics.jq" \
+      --argjson weights "${topic_weights_inline:-{}}" \
+      --argjson promoted_sections "${pdb_promoted_sections_json:-[]}" \
+      --arg desk "$DESK" 2>/dev/null || echo '{"topic_sections":"","georgia_section":""}'
+  )"
+  topic_sections_text="$(echo "$topic_bundle" | jq -r '.topic_sections // ""' 2>/dev/null || true)"
+  georgia_section_text="$(echo "$topic_bundle" | jq -r '.georgia_section // ""' 2>/dev/null || true)"
+
+  body="${title}
+"
+  body+="**Bottom Line:** [Agent: write 1-2 sentence summary of top stories]
+"
+  if [[ -n "${pdb_key_block//[$'\t\r\n ']}" ]]; then
+    body+="
+**Key Indicators**
+${pdb_key_block}
+"
+  fi
+  if [[ -n "${topic_sections_text//[$'\t\r\n ']}" ]]; then
+    body+="
+${topic_sections_text}
+"
+  fi
+  if [[ "$DESK" == "intel" && -n "${georgia_section_text//[$'\t\r\n ']}" ]]; then
+    body+="
+**Georgia**
+${georgia_section_text}
+"
+  fi
+  if [[ -n "${elevated_watch_topics//[$'\t\r\n ']}" ]]; then
+    body+="
+**Elevated Watch:** ${elevated_watch_topics}
+"
+  fi
+  body+="
+**Analyst Note:** [Agent: write assessment of big stories, what to watch next]
+"
+  body+="
+**Source Health:** ${source_health_line}
+"
+  if [[ -n "${pdb_data_notes//[$'\t\r\n ']}" ]]; then
+    body+="
+**Data Notes:** ${pdb_data_notes}
+"
+  fi
+else
+  body="${title}
 Time (UTC): ${timestamp}
 Desk: ${DESK} — Coverage: ${total_sources} API sources | ${rss_items} RSS items | ${twitter_items} tweets (${errors} degraded/error)
 "
 
-if [[ -n "$api_section" ]]; then
-  body+="
+  if [[ -n "$api_section" ]]; then
+    body+="
 KEY INDICATORS
 ${api_section}
 "
-fi
+  fi
 
-if [[ "$DESK" == "investing" && -n "$precious_section" ]]; then
-  body+="
+  if [[ "$DESK" == "investing" && -n "$precious_section" ]]; then
+    body+="
 PRECIOUS METALS
 • ${precious_section}
 "
-fi
+  fi
 
-if [[ "$DESK" == "weather" && -n "$forecast_section" ]]; then
-  body+="
+  if [[ "$DESK" == "weather" && -n "$forecast_section" ]]; then
+    body+="
 FORECAST MODELS (ECMWF / GFS / NAM, °F / mph)
 ${forecast_section}
 "
-fi
+  fi
 
-if [[ -n "$elevated_items" ]]; then
-  body+="
+  if [[ -n "$elevated_items" ]]; then
+    body+="
 ELEVATED — Priority Topics (Iran, Israel, ICE, Tariffs, DOGE, etc.)
 ${elevated_items}
 "
-fi
+  fi
 
-if [[ -n "$rss_section" ]]; then
-  body+="
+  if [[ -n "$rss_section" ]]; then
+    body+="
 RSS FEEDS (recent headlines)
 ${rss_section}
 "
-fi
+  fi
 
-if [[ -n "$twitter_section" ]]; then
-  body+="
+  if [[ -n "$twitter_section" ]]; then
+    body+="
 TWITTER/X SIGNALS
 ${twitter_section}
 "
-fi
+  fi
 
-if [[ -n "$georgia_rss" ]]; then
-  body+="
+  if [[ -n "$georgia_rss" ]]; then
+    body+="
 GEORGIA DESK
 ${georgia_rss}
 "
-fi
+  fi
 
-body+="
+  body+="
 Source health (API):
 ${top_errors}
 "
 
-if [[ -n "$data_status" ]]; then
-  body+="
+  if [[ -n "$data_status" ]]; then
+    body+="
 ${data_status}
 "
+  fi
 fi
 
 if [[ "$DRY_RUN" == "true" ]]; then

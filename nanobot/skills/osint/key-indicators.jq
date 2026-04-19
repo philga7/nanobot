@@ -1,5 +1,9 @@
-# Input: full brief JSON. Args: --argjson desk_api [], --argjson geo_filter null|object
-# Output: { "indicator_lines": [...], "data_status": "Data: ..."|null }
+# Input: full brief JSON. Args: --argjson desk_api [], --argjson geo_filter null|object,
+#   --arg pdb_mode "0"|"1" (optional; default "0"). When "1", PDB intel fields are populated
+#   and indicator_lines/data_status are empty for deliver.sh to use pdb_* fields only.
+# Output: { "indicator_lines": [...], "data_status": "Data: ..."|null,
+#   "pdb_key_indicator_lines": [...], "pdb_promoted_sections": [{topic, lines: [...]}],
+#   "pdb_data_notes": "..."|null }
 
 def trunc(s):
   (s | tostring | if length > 200 then .[0:200] + "..." else . end);
@@ -96,6 +100,8 @@ def filter_safecast($v):
 def count_only_keys:
   ["opensky", "maritime", "kiwisdr", "comtrade", "usaspending", "patents", "epa", "gscpi", "cloudflare", "reddit", "telegram", "ofac", "opensanctions", "celestrak", "space", "reliefweb"];
 
+def pdb_mode_on: (($pdb_mode // "0") == "1");
+
 def count_label($k):
   ({
     opensky: "OpenSky",
@@ -118,6 +124,35 @@ def count_label($k):
     reliefweb: "ReliefWeb",
     gdelt: "GDELT"
   }[$k] // ($k | ascii_upcase));
+
+# PDB Data Notes: short phrases for count-only style sources (see deliver.sh PDB spec).
+def pdb_data_note_phrase($k; $n):
+  (if $n == null then empty
+   elif ($k == "gdelt") then "GDELT \($n) articles"
+   elif ($k == "acled") then "ACLED \($n) events"
+   elif ($k == "opensky") then "OpenSky \($n) flights"
+   elif ($k == "maritime") then "Maritime \($n) tracks"
+   elif ($k == "kiwisdr") then "KiwiSDR \($n) hops"
+   elif ($k == "comtrade") then "COMTRADE \($n) rows"
+   elif ($k == "usaspending") then "USAspending \($n) awards"
+   elif ($k == "patents") then "Patents \($n) filings"
+   elif ($k == "epa") then "EPA \($n) readings"
+   elif ($k == "gscpi") then "GSCPI \($n)"
+   elif ($k == "cloudflare") then "Cloudflare \($n) radar points"
+   elif ($k == "reddit") then "Reddit \($n) posts"
+   elif ($k == "telegram") then "Telegram \($n) messages"
+   elif ($k == "ofac") then "OFAC \($n) rows"
+   elif ($k == "opensanctions") then "OpenSanctions \($n) rows"
+   elif ($k == "celestrak") then "Celestrak \($n) objects"
+   elif ($k == "space") then "Space \($n) items"
+   elif ($k == "reliefweb") then "ReliefWeb \($n) items"
+   else "\(count_label($k)) \($n)" end);
+
+def arrowize_line($line):
+  if ($line | type) != "string" then ($line | tostring)
+  elif ($line | test("^• \\[")) then
+    ($line | capture("^• \\[(?<label>[^\\]]+)\\] (?<tail>.*)$") | "→ " + .label + ": " + .tail)
+  else $line end;
 
 def source_row($k; $v):
   if $k == "gold_api" or $k == "forecast_models" then empty
@@ -284,18 +319,70 @@ def source_row($k; $v):
     empty
   end;
 
-[ (.sources // {}) | to_entries[]
+. as $brief
+| [ (.sources // {}) | to_entries[]
   | .key as $k | .value as $v
   | select(healthy($v))
   | select(desk_ok($k))
   | source_row($k; $v)
+  | . + {src: $k}
 ]
 | sort_by(.order)
-| (map(select(.kind == "count"))
-    | map("\(count_label(.key)) \(.count)")
-    | join(" | ")
-  ) as $ds
-| {
-    indicator_lines: (map(select(.line != null)) | map(.line)),
-    data_status: (if ($ds | length) == 0 then null else trunc("Data: " + $ds) end)
-  }
+| if pdb_mode_on then
+    . as $rows
+    | ($rows | map(select(.kind == "count"))) as $counts
+    | ($rows | map(select((.line != null) and (.kind != "count")))) as $lined
+    | (
+        [
+          $lined[]
+          | select(
+              .src == "yfinance" or .src == "fred" or .src == "treasury" or .src == "eia"
+              or .src == "bls" or .src == "nasa" or .src == "bluesky" or .src == "safecast"
+            )
+          | arrowize_line(.line)
+        ]
+      ) as $pdb_keys
+    | (
+        [
+          ($lined[] | select(.src == "cisa_kev") | {topic: "Cybersecurity", line: arrowize_line(.line)}),
+          ($lined[] | select(.src == "noaa") | {topic: "Weather / Alerts", line: arrowize_line(.line)}),
+          ($lined[] | select(.src == "who") | {topic: "Health", line: arrowize_line(.line)}),
+          ($lined[] | select(.src == "firms") | {topic: "Wildfire", line: arrowize_line(.line)})
+        ]
+        | group_by(.topic)
+        | map({topic: .[0].topic, lines: [.[].line]})
+      ) as $pdb_promos
+    | (
+        [
+          ($counts[] | pdb_data_note_phrase(.key; .count)),
+          (if (($brief.sources.gdelt.articles // []) | length) > 0 then
+             pdb_data_note_phrase("gdelt"; ($brief.sources.gdelt.articles | length))
+           else empty end),
+          (if (($brief.sources.acled.count // 0) > 0) then
+             pdb_data_note_phrase("acled"; $brief.sources.acled.count)
+           else empty end)
+        ]
+        | map(select((. != null) and (. != "")))
+        | unique
+        | join(" · ")
+      ) as $pdb_dn
+    | {
+        indicator_lines: [],
+        data_status: null,
+        pdb_key_indicator_lines: $pdb_keys,
+        pdb_promoted_sections: $pdb_promos,
+        pdb_data_notes: (if ($pdb_dn | length) == 0 then null else $pdb_dn end)
+      }
+  else
+    (map(select(.kind == "count"))
+      | map("\(count_label(.key)) \(.count)")
+      | join(" | ")
+    ) as $ds
+    | {
+        indicator_lines: (map(select(.line != null)) | map(.line)),
+        data_status: (if ($ds | length) == 0 then null else trunc("Data: " + $ds) end),
+        pdb_key_indicator_lines: [],
+        pdb_promoted_sections: [],
+        pdb_data_notes: null
+      }
+  end
