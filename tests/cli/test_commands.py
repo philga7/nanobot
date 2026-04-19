@@ -286,6 +286,39 @@ def test_find_by_name_accepts_camel_case_and_hyphen_aliases():
     assert find_by_name("github-copilot").name == "github_copilot"
 
 
+def test_config_explicit_xiaomi_mimo_provider_uses_default_api_base():
+    config = Config.model_validate(
+        {
+            "agents": {
+                "defaults": {
+                    "provider": "xiaomi_mimo",
+                    "model": "MiniMax-M1-80k",
+                }
+            },
+            "providers": {
+                "xiaomiMimo": {
+                    "apiKey": "test-key",
+                }
+            },
+        }
+    )
+
+    assert config.get_provider_name() == "xiaomi_mimo"
+    assert config.get_api_base() == "https://api.xiaomimimo.com/v1"
+
+
+def test_config_auto_detects_xiaomi_mimo_from_model_keyword():
+    config = Config.model_validate(
+        {
+            "agents": {"defaults": {"provider": "auto", "model": "mimo/MiniMax-M1-80k"}},
+            "providers": {"xiaomiMimo": {"apiKey": "test-key"}},
+        }
+    )
+
+    assert config.get_provider_name() == "xiaomi_mimo"
+    assert config.get_api_base() == "https://api.xiaomimimo.com/v1"
+
+
 def test_config_auto_detects_ollama_from_local_api_base():
     config = Config.model_validate(
         {
@@ -583,7 +616,7 @@ def test_agent_uses_workspace_directory_for_cron_store(monkeypatch, tmp_path: Pa
     assert seen["cron_store"] == config.workspace_path / "cron" / "jobs.json"
 
 
-def test_agent_workspace_override_migrates_legacy_cron(
+def test_agent_workspace_override_does_not_migrate_legacy_cron(
     monkeypatch, tmp_path: Path
 ) -> None:
     config_file = tmp_path / "instance" / "config.json"
@@ -631,11 +664,11 @@ def test_agent_workspace_override_migrates_legacy_cron(
 
     assert result.exit_code == 0
     assert seen["cron_store"] == override / "cron" / "jobs.json"
-    assert not legacy_file.exists()
-    assert (override / "cron" / "jobs.json").exists()
+    assert legacy_file.exists()
+    assert not (override / "cron" / "jobs.json").exists()
 
 
-def test_agent_custom_config_workspace_migrates_legacy_cron(
+def test_agent_custom_config_workspace_does_not_migrate_legacy_cron(
     monkeypatch, tmp_path: Path
 ) -> None:
     config_file = tmp_path / "instance" / "config.json"
@@ -683,8 +716,8 @@ def test_agent_custom_config_workspace_migrates_legacy_cron(
 
     assert result.exit_code == 0
     assert seen["cron_store"] == custom_workspace / "cron" / "jobs.json"
-    assert not legacy_file.exists()
-    assert (custom_workspace / "cron" / "jobs.json").exists()
+    assert legacy_file.exists()
+    assert not (custom_workspace / "cron" / "jobs.json").exists()
 
 
 def test_agent_overrides_workspace_path(mock_agent_runtime):
@@ -1033,11 +1066,11 @@ def test_gateway_workspace_override_does_not_migrate_legacy_cron(
 
     assert isinstance(result.exception, _StopGatewayError)
     assert seen["cron_store"] == override / "cron" / "jobs.json"
-    assert not legacy_file.exists()
-    assert (override / "cron" / "jobs.json").exists()
+    assert legacy_file.exists()
+    assert not (override / "cron" / "jobs.json").exists()
 
 
-def test_gateway_custom_config_workspace_migrates_legacy_cron(
+def test_gateway_custom_config_workspace_does_not_migrate_legacy_cron(
     monkeypatch, tmp_path: Path
 ) -> None:
     config_file = _write_instance_config(tmp_path)
@@ -1069,8 +1102,8 @@ def test_gateway_custom_config_workspace_migrates_legacy_cron(
 
     assert isinstance(result.exception, _StopGatewayError)
     assert seen["cron_store"] == custom_workspace / "cron" / "jobs.json"
-    assert not legacy_file.exists()
-    assert (custom_workspace / "cron" / "jobs.json").exists()
+    assert legacy_file.exists()
+    assert not (custom_workspace / "cron" / "jobs.json").exists()
 
 
 def test_migrate_cron_store_moves_legacy_file(tmp_path: Path) -> None:
@@ -1179,7 +1212,7 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
             return None
 
     class _FakeChannelManager:
-        def __init__(self, _config, _bus) -> None:
+        def __init__(self, _config, _bus, **_kwargs) -> None:
             self.enabled_channels = ["telegram", "discord"]
 
         async def start_all(self) -> None:

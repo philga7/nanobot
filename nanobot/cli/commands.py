@@ -21,6 +21,7 @@ if sys.platform == "win32":
             pass
 
 import typer
+from loguru import logger
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.formatted_text import ANSI, HTML
@@ -46,7 +47,7 @@ class SafeFileHistory(FileHistory):
         safe = string.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
         super().store_string(safe)
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
-from nanobot.config.paths import get_data_dir, get_workspace_path
+from nanobot.config.paths import get_data_dir, get_workspace_path, is_default_workspace
 from nanobot.config.schema import Config
 from nanobot.utils.helpers import sync_workspace_templates
 from nanobot.utils.restart import (
@@ -637,8 +638,21 @@ def gateway(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Start the nanobot gateway."""
-    from loguru import logger
+    if verbose:
+        import logging
 
+        logging.basicConfig(level=logging.DEBUG)
+    cfg = _load_runtime_config(config, workspace)
+    _run_gateway(cfg, port=port)
+
+
+def _run_gateway(
+    config: Config,
+    *,
+    port: int | None = None,
+    open_browser_url: str | None = None,
+) -> None:
+    """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
@@ -647,12 +661,6 @@ def gateway(
     from nanobot.heartbeat.service import HeartbeatService
     from nanobot.session.manager import SessionManager
 
-    if verbose:
-        import logging
-
-        logging.basicConfig(level=logging.DEBUG)
-
-    config = _load_runtime_config(config, workspace)
     port = port if port is not None else config.gateway.port
 
     console.print(f"{__logo__} Starting nanobot gateway version {__version__} on port {port}...")
@@ -661,8 +669,9 @@ def gateway(
     provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
 
-    # Ensure legacy global cron store is migrated into the active workspace store.
-    _migrate_cron_store(config)
+    # Preserve existing single-workspace installs, but keep custom workspaces clean.
+    if is_default_workspace(config.workspace_path):
+        _migrate_cron_store(config)
 
     # Create cron service with workspace-scoped store
     cron_store_path = config.workspace_path / "cron" / "jobs.json"
@@ -842,8 +851,9 @@ def gateway(
 
     cron.on_job = on_cron_job
 
-    # Create channel manager
-    channels = ChannelManager(config, bus)
+    # Create channel manager (forwards SessionManager so the WebSocket channel
+    # can serve the embedded webui's REST surface).
+    channels = ChannelManager(config, bus, session_manager=session_manager)
 
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
@@ -967,6 +977,7 @@ def gateway(
         agent.dream.model = dream_cfg.model_override
     agent.dream.max_batch_size = dream_cfg.max_batch_size
     agent.dream.max_iterations = dream_cfg.max_iterations
+    agent.dream.annotate_line_ages = dream_cfg.annotate_line_ages
     from nanobot.cron.types import CronJob, CronPayload
 
     cron.register_system_job(
@@ -979,15 +990,43 @@ def gateway(
     )
     console.print(f"[green]✓[/green] Dream: {dream_cfg.describe_schedule()}")
 
+    async def _open_browser_when_ready() -> None:
+        """Wait for the gateway to bind, then point the user's browser at the webui."""
+        if not open_browser_url:
+            return
+        import webbrowser
+        # Channels start asynchronously; a short poll lets us avoid racing the bind.
+        for _ in range(40):  # ~4s max
+            try:
+                reader, writer = await asyncio.open_connection(
+                    config.gateway.host or "127.0.0.1", port
+                )
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                break
+            except OSError:
+                await asyncio.sleep(0.1)
+        try:
+            webbrowser.open(open_browser_url)
+            console.print(f"[green]✓[/green] Opened browser at {open_browser_url}")
+        except Exception as e:
+            console.print(f"[yellow]Could not open browser ({e}); visit {open_browser_url}[/yellow]")
+
     async def run():
         try:
             await cron.start()
             await heartbeat.start()
-            await asyncio.gather(
+            tasks = [
                 agent.run(),
                 channels.start_all(),
                 _health_server(config.gateway.host, port),
-            )
+            ]
+            if open_browser_url:
+                tasks.append(_open_browser_when_ready())
+            await asyncio.gather(*tasks)
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         except Exception:
@@ -1003,6 +1042,68 @@ def gateway(
             await channels.stop_all()
 
     asyncio.run(run())
+
+
+@app.command()
+def web(
+    port: int | None = typer.Option(None, "--port", "-p", help="WebSocket port for the webui"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the browser when ready"),
+):
+    """Start the gateway with the embedded webui and (by default) open a browser."""
+    if verbose:
+        import logging
+
+        logging.basicConfig(level=logging.DEBUG)
+
+    cfg = _load_runtime_config(config, workspace)
+
+    # Force the websocket channel on with token-gated auth so the webui is functional.
+    # ``--port`` applies to the webui's websocket/HTTP port, not the gateway's
+    # management port, since that's the only surface users visit.
+    ws_section = cfg.channels.websocket
+    if isinstance(ws_section, dict):
+        ws_section.setdefault("host", "127.0.0.1")
+        ws_section["enabled"] = True
+        ws_section["websocketRequiresToken"] = True
+        if port is not None:
+            ws_section["port"] = port
+        ws_host = ws_section.get("host", "127.0.0.1")
+        ws_port = ws_section.get("port", 8765)
+        ws_path = ws_section.get("path", "/")
+    else:
+        ws_section.enabled = True
+        if hasattr(ws_section, "websocket_requires_token"):
+            ws_section.websocket_requires_token = True
+        if port is not None:
+            ws_section.port = port
+        ws_host = getattr(ws_section, "host", "127.0.0.1") or "127.0.0.1"
+        ws_port = getattr(ws_section, "port", 8765)
+        ws_path = getattr(ws_section, "path", "/") or "/"
+
+    # Confirm the bundled SPA exists before promising the user a browser launch.
+    from nanobot.channels.manager import _default_webui_dist
+
+    dist = _default_webui_dist()
+    if dist is None:
+        console.print(
+            "[yellow]Warning: webui assets not found at nanobot/web/dist/. "
+            "Run `cd webui && bun install && bun run build` from a source checkout.[/yellow]"
+        )
+
+    scheme = "http"
+    # Browsers refuse cookies/JS on 0.0.0.0 — collapse to loopback for the visit URL.
+    visit_host = "127.0.0.1" if ws_host in {"0.0.0.0", "::"} else ws_host
+    open_url = f"{scheme}://{visit_host}:{ws_port}{ws_path if ws_path != '/' else ''}/"
+
+    # The gateway's management port is separate from the webui port; leave it
+    # on its configured default so --port only moves the visible surface.
+    _run_gateway(
+        cfg,
+        open_browser_url=open_url if open_browser else None,
+    )
 
 
 # ============================================================================
@@ -1024,8 +1125,6 @@ def agent(
     ),
 ):
     """Interact with the agent directly."""
-    from loguru import logger
-
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
     from nanobot.cron.service import CronService
@@ -1036,8 +1135,9 @@ def agent(
     bus = MessageBus()
     provider = _make_provider(config)
 
-    # Ensure legacy global cron store is migrated into the active workspace store.
-    _migrate_cron_store(config)
+    # Preserve existing single-workspace installs, but keep custom workspaces clean.
+    if is_default_workspace(config.workspace_path):
+        _migrate_cron_store(config)
 
     # Create cron service with workspace-scoped store
     cron_store_path = config.workspace_path / "cron" / "jobs.json"
