@@ -114,6 +114,39 @@
       "topic_weights": "priority_topics",
       "geo_filter": null
     },
+    "live-feed": {
+      "channel": "C0ALXXXXXXX",
+      "schedule": "*/30 * * * *",
+      "tz": "America/New_York",
+      "sources": {
+        "api": [],
+        "rss": [
+          "citizen-free-press"
+        ],
+        "twitter": [
+          "mario-nawfal",
+          "chad-pergram",
+          "raws-alerts",
+          "leading-report"
+        ]
+      },
+      "topic_weights": "priority_topics",
+      "geo_filter": null,
+      "live_feed": true,
+      "live_feed_config": {
+        "poll_interval_min": 30,
+        "cfp_item_limit": 30,
+        "twitter_lookback_min": 35,
+        "ntfy_on_high_weight": true,
+        "ntfy_weight_threshold": 1.3,
+        "cross_post_breaking": true,
+        "breaking_score_threshold": 6,
+        "waking_hours_only_ntfy": true,
+        "waking_hours_start": "07:00",
+        "waking_hours_end": "23:00",
+        "waking_hours_tz": "America/New_York"
+      }
+    },
     "investing": {
       "channel": "C0AG5NSKVCL",
       "schedule": "0 7 * * 1-5",

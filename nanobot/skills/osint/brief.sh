@@ -26,6 +26,7 @@ INTEL_CACHE_RSS="${INTEL_DIR}/cache/rss"
 INTEL_CACHE_TWITTER="${INTEL_DIR}/cache/twitter"
 INTEL_TOPICS="${INTEL_DIR}/config/topics.json"
 INTEL_SOURCES_CFG="${INTEL_DIR}/config/sources.json"
+INTEL_HISTORY="${INTEL_DIR}/history/news_history.json"
 
 # API keys: legacy ~/.wrenvps/osint/.env first, then ~/.wrenvps/intel/config/.env (canonical overrides)
 for OSINT_ENV in "${HOME}/.wrenvps/osint/.env" "${HOME}/.wrenvps/intel/config/.env"; do
@@ -316,6 +317,47 @@ if [[ -d "$INTEL_CACHE_TWITTER" ]] && command -v jq >/dev/null 2>&1; then
     )"
     twitter_count="$(echo "$twitter_items_json" | jq 'length' 2>/dev/null || echo 0)"
     echo "Brief: loaded ${twitter_count} Twitter items (pre-filter)" >&2
+  fi
+fi
+
+# Optional cross-desk dedup: skip RSS/Twitter rows already posted to live-feed or breaking-news.
+if [[ "$DESK" == "intel" ]] && [[ -f "$INTEL_HISTORY" ]] && command -v jq >/dev/null 2>&1; then
+  seen_keys="$(
+    jq -c '
+      to_entries
+      | map(
+          select(
+            (.value.channels // []) | any(. == "#live-feed" or . == "#breaking-news")
+          )
+          | .key
+        )
+    ' "$INTEL_HISTORY" 2>/dev/null || echo "[]"
+  )"
+  if [[ "$seen_keys" != "[]" ]]; then
+    rss_items_json="$(
+      echo "$rss_items_json" | jq -c --argjson seen "$seen_keys" '
+        map(
+          . as $r
+          | (
+              ($r.guid // $r.id // $r.url // $r.link // "")
+              | tostring
+            ) as $k
+          | select(($seen | index($k)) == null)
+        )
+      ' 2>/dev/null || echo "$rss_items_json"
+    )"
+    twitter_items_json="$(
+      echo "$twitter_items_json" | jq -c --argjson seen "$seen_keys" '
+        map(
+          . as $t
+          | (
+              ($t.tweet_id // $t.id // $t.url // "")
+              | tostring
+            ) as $k
+          | select(($seen | index($k)) == null)
+        )
+      ' 2>/dev/null || echo "$twitter_items_json"
+    )"
   fi
 fi
 

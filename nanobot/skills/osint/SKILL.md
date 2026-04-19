@@ -86,9 +86,37 @@ Copy from the repo:
 bash brief.sh --desk weather --force
 bash deliver.sh --desk investing --dry-run
 bash deliver.sh --desk intel --force --json /tmp/osint_brief_intel.json
+bash deliver.sh --live-feed --force --json /tmp/osint_live_feed.json
 ```
 
 Default if `--desk` is omitted: **`intel`** (same as pre-desk behavior when `desks` is absent: all API caches, all RSS/Twitter items).
+
+## Live Feed Desk
+
+The live-feed desk provides near-real-time awareness for breaking and high-velocity events. It polls every 30 minutes and posts a firehose batch into `#live-feed`.
+
+### Sources
+
+- **Citizen Free Press** RSS (`citizen-free-press`) with elevated item limit support.
+- **X/Twitter accounts** listed under `desks.live-feed.sources.twitter` (defaults include Mario Nawfal, Chad Pergram, Raws Alerts, Leading Report).
+
+### Delivery behavior
+
+- **`#live-feed`**: every newly seen item (no score gate).
+- **`#breaking-news`**: cross-post only when item score meets the configured threshold.
+- **ntfy**: only HIGH/BREAKING items and only during waking hours (07:00-23:00 ET by default).
+
+### Urgency tags
+
+- `🔴 BREAKING`: title/tweet starts with live or breaking prefix, or major-event keyword hit.
+- `⚡ HIGH`: topic weight meets `ntfy_weight_threshold` (default `1.3`).
+- `📰 NEW`: everything else.
+
+### Dedup
+
+- Shared history file: `~/.wrenvps/intel/history/news_history.json`.
+- Helper: `nanobot/skills/osint/sources/dedup.py` (`--check`, `--add`, `--prune`, `--export`, `--since`).
+- Live feed and intel desk both consult the same history to avoid cross-channel duplicate posts.
 
 ## Topic weighting and conversational topic lists
 
@@ -260,6 +288,7 @@ bash /path/to/skills/osint/deliver.sh --desk intel --force --json /tmp/osint_bri
 Supported flags:
 
 - `--desk intel|investing|weather` selects desk config (default **`intel`**)
+- `--live-feed` runs live-feed mode (internally uses `live-feed.sh`; equivalent to `--desk live-feed` behavior)
 - `--json <filepath>` writes normalized brief JSON to a file, prints the path on
   stdout, exits (no Slack/ntfy). Use this for scheduled agent briefs.
 - `--dry-run` prints the jq-assembled message without posting (mutually
@@ -298,12 +327,14 @@ Jobs (America/New_York by default):
 | `osint-intel` | `0 7,18 * * *` | Agent: `deliver.sh --desk intel --force --json /tmp/osint_brief_intel.json` → synthesize → `#intel-signals` |
 | `osint-investing` | `0 7 * * 1-5` | Agent: `… --json /tmp/osint_brief_investing.json` → `#investing` |
 | `osint-weather` | `0 6,16 * * *` | Agent: `… --json /tmp/osint_brief_weather.json` → `#weather` |
+| `osint-live-feed` | `*/30 * * * *` | Agent: `deliver.sh --live-feed --json /tmp/osint_live_feed.json` → post batch to `#live-feed`, cross-post scored rows to `#breaking-news`, send ntfy for HIGH/BREAKING in waking hours |
 
 Environment overrides:
 
 - `OSINT_BRIEFING_CRON_INTEL` (default `0 7,18 * * *`)
 - `OSINT_BRIEFING_CRON_INVESTING` (default `0 7 * * 1-5`)
 - `OSINT_BRIEFING_CRON_WEATHER` (default `0 6,16 * * *`)
+- `OSINT_BRIEFING_CRON_LIVE_FEED` (default `*/30 * * * *`)
 - `NANOBOT_AGENTS__DEFAULTS__WORKSPACE` (default `~/.wrenvps/workspace`)
 - `OSINT_CRON_SKILL_ROOT` — directory passed to `cd` in cron messages (default
   `/root/projects/nanobot/nanobot/skills/osint`)
