@@ -408,6 +408,69 @@ fi
 # Phase 7: Combine all data into single output
 # ---------------------------------------------------------------------------
 timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+current_conditions_json="[]"
+
+if [[ "$DESK" == "weather" ]]; then
+  weather_cities_json='[{"name":"Jefferson, GA","lat":34.12,"lon":-83.58},{"name":"Dahlonega, GA","lat":34.53,"lon":-83.98},{"name":"Statesboro, GA","lat":32.45,"lon":-81.78}]'
+  rows=()
+  while IFS= read -r city; do
+    [[ -z "$city" ]] && continue
+    city_name="$(echo "$city" | jq -r '.name')"
+    city_lat="$(echo "$city" | jq -r '.lat')"
+    city_lon="$(echo "$city" | jq -r '.lon')"
+    weather_raw="$(
+      curl -sf --max-time 15 \
+        "https://api.open-meteo.com/v1/forecast?latitude=${city_lat}&longitude=${city_lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,weather_code,uv_index&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&temperature_unit=fahrenheit&wind_speed_unit=mph" \
+        2>/dev/null || echo "{}"
+    )"
+    weather_row="$(
+      echo "$weather_raw" | jq -c --arg name "$city_name" --argjson lat "$city_lat" --argjson lon "$city_lon" '
+        def wx_desc($c):
+          if $c == 0 then "clear"
+          elif ($c == 1 or $c == 2) then "partly cloudy"
+          elif $c == 3 then "overcast"
+          elif ($c == 45 or $c == 48) then "fog"
+          elif ($c >= 51 and $c <= 57) then "drizzle"
+          elif ($c >= 61 and $c <= 67) then "rain"
+          elif ($c >= 71 and $c <= 77) then "snow"
+          elif ($c == 80 or $c == 81 or $c == 82) then "rain showers"
+          elif ($c == 85 or $c == 86) then "snow showers"
+          elif ($c >= 95 and $c <= 99) then "thunderstorms"
+          else "unknown"
+          end;
+        {
+          name: $name,
+          latitude: $lat,
+          longitude: $lon,
+          current: {
+            temperature_f: (.current.temperature_2m // null),
+            apparent_temperature_f: (.current.apparent_temperature // null),
+            humidity_pct: (.current.relative_humidity_2m // null),
+            wind_speed_mph: (.current.wind_speed_10m // null),
+            wind_direction_deg: (.current.wind_direction_10m // null),
+            uv_index: (.current.uv_index // null),
+            weather_code: (.current.weather_code // null),
+            condition: wx_desc(.current.weather_code // -1),
+            observed_at: (.current.time // null)
+          },
+          daily: {
+            high_f: (.daily.temperature_2m_max[0] // null),
+            low_f: (.daily.temperature_2m_min[0] // null),
+            day: (.daily.time[0] // null)
+          }
+        }
+      ' 2>/dev/null || echo "{}"
+    )"
+    rows+=("$weather_row")
+  done < <(echo "$weather_cities_json" | jq -c '.[]')
+
+  current_conditions_json="[]"
+  for row in "${rows[@]:-}"; do
+    current_conditions_json="$(
+      echo "$current_conditions_json" | jq -c --argjson x "$row" '. + [$x]' 2>/dev/null || echo "$current_conditions_json"
+    )"
+  done
+fi
 
 {
   echo '{'
@@ -440,6 +503,7 @@ timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   echo ''
   echo '  },'
+  echo "  \"current_conditions\": ${current_conditions_json},"
 
   echo "  \"rss\": ${rss_items_json},"
 

@@ -940,7 +940,8 @@ case "$TEMPLATE" in
         title=":chart_with_upwards_trend: INVESTING DESK | OSINT Brief"
         ;;
       weather)
-        title=":cloud: WEATHER DESK | OSINT Brief"
+        et_time="$(date -d "$timestamp" +"%-d %b %Y, %-I:%M %p ET" 2>/dev/null || echo "$timestamp")"
+        title="WEATHER BRIEF — ${et_time}"
         ;;
       intel)
         title="**INTEL SIGNAL — $(iso_to_et_line "$timestamp")**"
@@ -956,7 +957,31 @@ case "$TEMPLATE" in
 esac
 
 # --- Compose body ---
-if [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]]; then
+if [[ "$DESK" == "weather" ]]; then
+  body="${title}
+
+**ALERTS:** [Agent: write alert summary — local counties first (Jackson, Lumpkin, Bulloch), then national systems that could track toward SE. If none, say \"None active for our area. No watches, warnings, or advisories for Jackson, Lumpkin, or Bulloch counties. Clear sailing.\"]
+
+**Current Conditions**
+[Agent: one-line per locality — City: temp° condition]
+
+**Jefferson, GA**
+[Agent: current conditions line + 2-3 sentence narrative forecast]
+
+**Dahlonega, GA**
+[Agent: current conditions line + 2-3 sentence narrative forecast]
+
+**Statesboro, GA**
+[Agent: current conditions line + 2-3 sentence narrative forecast]
+
+**Model Agreement:** [Agent: write narrative assessment of model agreement level — Very Strong / Strong / Moderate / Weak. Summarize what models agree on and where they diverge. Sub-bullets for Temps, Wind, other factors.]
+•   Temps: [narrative]
+•   Wind: [narrative]
+
+**Key Notes:**
+•   [Agent: 3-5 bullet points on notable trends, changes, things to watch]
+"
+elif [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]]; then
   source_health_line="$(
     echo "$brief_json" | jq -r --argjson apis "$desk_api_json" '
       def in_desk($k):
