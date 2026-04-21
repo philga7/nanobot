@@ -183,7 +183,12 @@ if [[ "$LIVE_FEED_MODE" == "true" ]]; then
     exit 0
   fi
 
-  live_channel="${OSINT_LIVE_FEED_SLACK_CHANNEL_ID:-C0ALXXXXXXX}"
+  desk_live_channel="$(
+    if [[ -f "$INTEL_TOPICS" ]]; then
+      jq -r '.desks["live-feed"].channel // empty' "$INTEL_TOPICS" 2>/dev/null || true
+    fi
+  )"
+  live_channel="${OSINT_LIVE_FEED_SLACK_CHANNEL_ID:-${desk_live_channel:-C0ATURFU6MU}}"
   breaking_channel="${OSINT_BREAKING_NEWS_SLACK_CHANNEL_ID:-C0AFVM42G4B}"
   if [[ "$CHANNEL_OVERRIDE" == "true" ]]; then
     live_channel="$CHANNEL_ID"
@@ -194,17 +199,70 @@ if [[ "$LIVE_FEED_MODE" == "true" ]]; then
     exit 0
   fi
 
+  live_item_defs='
+    def as_text:
+      if . == null then ""
+      elif type == "string" then .
+      elif type == "object" then (.name // .source // .outlet // .label // "")
+      else tostring
+      end;
+    def source_name($item):
+      ($item.source_name // $item.feed_title // $item.feed // $item.source // "Source") as $src
+      | ($src | tostring) as $s
+      | if ($s | ascii_downcase) == "citizen-free-press" then "CFP"
+        elif ($s | ascii_downcase) == "associated-press" then "AP"
+        elif ($s | ascii_downcase) == "wall-street-journal" then "WSJ"
+        elif ($s | ascii_downcase) == "georgia-public-broadcasting" then "GPB"
+        else ($s | gsub("-"; " "))
+        end;
+    def cfp_relay_source($item):
+      ($item.original_source // $item.origin_source // $item.relay_source // null) as $os
+      | (
+          $item.original_source_name
+          // ($os | as_text)
+          // (
+            ($item.title // "")
+            | capture("(?<src>AP|Reuters|Bloomberg|WSJ|CNN|BBC|Fox News|New York Times|NYT|Washington Post|WaPo)"; "i").src?
+          )
+          // "Original Source"
+        );
+    def cfp_relay_url($item):
+      (
+        $item.original_source_url
+        // $item.original_url
+        // $item.origin_url
+        // (
+          ($item.original_source // $item.origin_source // $item.relay_source // null)
+          | if type == "object" then (.url // .link // "") else "" end
+        )
+        // ""
+      );
+    def cfp_has_relay($item):
+      (cfp_relay_url($item) | length) > 0;
+    def source_parenthetical($item):
+      if ($item.type // "") == "twitter" then
+        "(@" + (($item.source // $item.handle // "unknown") | tostring | ltrimstr("@")) + ")"
+      elif (($item.source // "") | ascii_downcase) == "citizen-free-press" then
+        ($item.url // "") as $cfp_url
+        | if cfp_has_relay($item) then
+            "(<" + $cfp_url + "|CFP>) → (<" + cfp_relay_url($item) + "|" + cfp_relay_source($item) + ">)"
+          else
+            "(<" + $cfp_url + "|CFP>)"
+          end
+      else
+        "(<" + (($item.url // "") | tostring) + "|" + source_name($item) + ">)"
+      end;
+    def render_item($item):
+      ($item.title // "(no title)") + " " + source_parenthetical($item);
+  '
+
   message="$(
     echo "$lf_json" | jq -r '
-      . as $root
-      | ($root.swept_at // "" | sub("T"; " ") | sub("Z$"; " UTC")) as $ts
-      | "🔴 LIVE FEED | " + $ts + "\n\n"
-        + ((.items // [])[:20]
-          | map(.urgency + " | " + (.title // "(no title)"))
-          | join("\n"))
-        + "\n\nSources: CFP (" + (((.items // []) | map(select(.source == "citizen-free-press")) | length) | tostring)
-        + ") | Twitter (" + (((.items // []) | map(select(.type == "twitter")) | length) | tostring) + ")"
-    '
+      '"$live_item_defs"'
+      | (.items // [])[:20]
+      | map(render_item(.))
+      | if length == 0 then empty else join("\n\n") end
+    ' 2>/dev/null || true
   )"
   if [[ -n "$message" ]]; then
     post_slack_message "$live_channel" "$message"
@@ -212,13 +270,13 @@ if [[ "$LIVE_FEED_MODE" == "true" ]]; then
 
   while IFS= read -r item; do
     [[ -n "$item" ]] || continue
-    cp_msg="$(echo "$item" | jq -r '
-      "⚡ CROSS-POST from #live-feed | Score " + ((.score // 0 | tostring)) + "\n\n"
-      + (.title // "(no title)") + "\n"
-      + (.url // "") + "\n\n"
-      + "Topic tags: " + ((.topic_tags // []) | join(", "))
-      + " | Source: " + (.source // "") + " (" + (.source_tier // "unknown") + ")"
-    ')"
+    cp_msg="$(
+      echo "$item" | jq -r '
+        '"$live_item_defs"'
+        | render_item(.)
+      ' 2>/dev/null || true
+    )"
+    [[ -n "$cp_msg" ]] || continue
     post_slack_message "$breaking_channel" "$cp_msg"
   done < <(echo "$lf_json" | jq -c '.cross_post_items[]?')
 
