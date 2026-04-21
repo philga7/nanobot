@@ -253,7 +253,11 @@ if [[ "$LIVE_FEED_MODE" == "true" ]]; then
         "(<" + (($item.url // "") | tostring) + "|" + source_name($item) + ">)"
       end;
     def render_item($item):
-      ($item.title // "(no title)") + " " + source_parenthetical($item);
+      (if (($item.source // "") | ascii_downcase) == "citizen-free-press" and ($item.original_title // "") != "" then
+        $item.original_title
+      else
+        ($item.title // "(no title)")
+      end) + " " + source_parenthetical($item);
   '
 
   message="$(
