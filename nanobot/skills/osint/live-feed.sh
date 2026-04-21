@@ -69,7 +69,14 @@ cross_post_breaking="$(echo "$cfg" | jq -r '.cross_post_breaking // true')"
 breaking_score_threshold="$(echo "$cfg" | jq -r '.breaking_score_threshold // 6')"
 
 major_keywords_json="$(jq -c '.major_event_keywords // []' "$INTEL_TOPICS" 2>/dev/null || echo '[]')"
-topic_weights_json="$(jq -c --arg k "$weights_key" '.[$k] // {}' "$INTEL_TOPICS" 2>/dev/null || echo '{}')"
+topic_weights_json="$(jq -c --arg k "$weights_key" '
+  (.[$k] // []) |
+  if type == "array" then
+    [.[] | .keywords[] as $kw | {($kw): .weight}] | add // {}
+  else
+    with_entries(.value |= .weight // .)
+  end
+' "$INTEL_TOPICS" 2>/dev/null || echo '{}')"
 
 if [[ -x "$INTEL_FETCH_RSS" ]]; then
   OSINT_RSS_ITEM_LIMIT_OVERRIDE="citizen-free-press:${cfp_item_limit}" \
