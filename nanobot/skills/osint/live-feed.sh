@@ -111,11 +111,15 @@ python3 - <<'PY' > "$tmp_items"
 from __future__ import annotations
 
 import glob
+import html
 import json
 import os
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 cache_rss = Path(os.environ["INTEL_CACHE_RSS"])
 cache_tw = Path(os.environ["INTEL_CACHE_TWITTER"])
@@ -127,6 +131,157 @@ last_sweep = os.environ["LAST_SWEEP"]
 ntfy_th = float(os.environ["NTFY_TH"])
 breaking_th = float(os.environ["BREAK_TH"])
 cross_post = os.environ["CROSS_POST"].lower() == "true"
+CFP_CACHE_PATH = Path("/tmp/osint_cfp_resolve_cache.json")
+CFP_CACHE_TTL_SECONDS = 4 * 60 * 60
+EMPTY_CFP_RESOLUTION = {
+    "original_source_url": "",
+    "original_title": "",
+    "original_source_name": "",
+}
+SOURCE_NAME_MAP = {
+    "apnews.com": "AP",
+    "nbcnews.com": "NBC News",
+    "abcnews.go.com": "ABC News",
+    "cnn.com": "CNN",
+    "bbc.com": "BBC",
+    "bbc.co.uk": "BBC",
+    "reuters.com": "Reuters",
+    "bloomberg.com": "Bloomberg",
+    "wsj.com": "WSJ",
+    "nytimes.com": "NYT",
+    "washingtonpost.com": "WaPo",
+    "foxnews.com": "Fox News",
+    "thehill.com": "The Hill",
+    "politico.com": "Politico",
+    "axios.com": "Axios",
+    "theatlantic.com": "The Atlantic",
+    "gpb.org": "GPB",
+    "georgiarecorder.com": "Georgia Recorder",
+    "capitol-beat.org": "Capitol Beat",
+    "gapundit.com": "GA Pundit",
+}
+
+
+def load_cfp_cache() -> dict:
+    try:
+        if CFP_CACHE_PATH.exists():
+            data = json.loads(CFP_CACHE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_cfp_cache(cache: dict) -> None:
+    try:
+        CFP_CACHE_PATH.write_text(json.dumps(cache), encoding="utf-8")
+    except Exception:
+        pass
+
+
+cfp_cache: dict = load_cfp_cache()
+
+
+def fetch_html(url: str, timeout: float = 5.0) -> str:
+    if not url:
+        return ""
+    try:
+        req = Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; nanobot-live-feed/1.0; +https://github.com/philga7/nanobot)"
+                )
+            },
+        )
+        with urlopen(req, timeout=timeout) as resp:
+            content = resp.read()
+            charset = resp.headers.get_content_charset() or "utf-8"
+            return content.decode(charset, errors="replace")
+    except Exception:
+        return ""
+
+
+def normalize_source_name_from_url(url: str) -> str:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        host = ""
+    host = host.lstrip("www.")
+    if not host:
+        return ""
+    for domain, label in SOURCE_NAME_MAP.items():
+        if host == domain or host.endswith("." + domain):
+            return label
+    base = host.split(".")
+    if len(base) >= 2:
+        return base[-2].replace("-", " ").title()
+    return host
+
+
+def extract_first_non_cfp_link(page_html: str) -> str:
+    if not page_html:
+        return ""
+    matches = re.findall(r'href="(https?://[^"]+)"', page_html, flags=re.I)
+    for link in matches:
+        l = link.strip()
+        if not l:
+            continue
+        low = l.lower()
+        if "citizenfreepress.com" in low:
+            continue
+        return l
+    return ""
+
+
+def extract_og_title(page_html: str) -> str:
+    if not page_html:
+        return ""
+    m = re.search(
+        r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+        page_html,
+        flags=re.I,
+    )
+    if not m:
+        m = re.search(
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']',
+            page_html,
+            flags=re.I,
+        )
+    if not m:
+        return ""
+    return html.unescape(m.group(1).strip())
+
+
+def resolve_cfp_source(cfp_url: str) -> dict:
+    if not cfp_url:
+        return dict(EMPTY_CFP_RESOLUTION)
+    now = time.time()
+    cached = cfp_cache.get(cfp_url)
+    if isinstance(cached, dict):
+        ts = float(cached.get("_cached_at", 0) or 0)
+        if now - ts <= CFP_CACHE_TTL_SECONDS:
+            return {
+                "original_source_url": str(cached.get("original_source_url", "")),
+                "original_title": str(cached.get("original_title", "")),
+                "original_source_name": str(cached.get("original_source_name", "")),
+            }
+
+    result = dict(EMPTY_CFP_RESOLUTION)
+    cfp_html = fetch_html(cfp_url, timeout=5.0)
+    original_url = extract_first_non_cfp_link(cfp_html)
+    if original_url:
+        result["original_source_url"] = original_url
+        result["original_source_name"] = normalize_source_name_from_url(original_url)
+        original_html = fetch_html(original_url, timeout=5.0)
+        result["original_title"] = extract_og_title(original_html)
+
+    cfp_cache[cfp_url] = {
+        **result,
+        "_cached_at": now,
+    }
+    return result
 
 
 def norm(s: str) -> str:
@@ -230,6 +385,8 @@ for path in sorted(glob.glob(str(cache_rss / "*.json"))):
                         "score": s,
                     }
                 )
+                if slug == "citizen-free-press":
+                    items[-1].update(resolve_cfp_source(url))
 
 for path in sorted(glob.glob(str(cache_tw / "*.json"))):
     handle = Path(path).stem
@@ -279,6 +436,7 @@ for path in sorted(glob.glob(str(cache_tw / "*.json"))):
 items.sort(key=lambda x: x.get("pub_date", ""), reverse=True)
 ntfy_items = [i for i in items if i["urgency"] in {"🔴 BREAKING", "⚡ HIGH"}]
 cross_post_items = [i for i in items if cross_post and float(i.get("score", 0)) >= breaking_th]
+save_cfp_cache(cfp_cache)
 
 print(
     json.dumps(
