@@ -43,6 +43,11 @@ def main() -> int:
         help="Cron expr for investing desk (default: 07:00 ET weekdays)",
     )
     parser.add_argument(
+        "--work-cron",
+        default=os.getenv("OSINT_BRIEFING_CRON_WORK", "0 7 * * 1-5"),
+        help="Cron expr for work desk (default: 07:00 ET weekdays)",
+    )
+    parser.add_argument(
         "--weather-cron",
         default=os.getenv("OSINT_BRIEFING_CRON_WEATHER", "0 6,16 * * *"),
         help="Cron expr for weather desk (default: 06:00 and 16:00 ET daily)",
@@ -98,6 +103,22 @@ def main() -> int:
         "Post the completed brief to Slack #weather using the message tool with channel=\"slack\" and chat_id=\"C0AGWC921TJ\".\n\n"
         "IMPORTANT: Do NOT use subagents. Do NOT use curl for Slack. Use the message tool directly to post to Slack."
     )
+    work_msg = (
+        "Run the OSINT work desk brief. "
+        f"Execute: cd {skill} && bash deliver.sh --desk work --force --json /tmp/osint_brief_work.json. "
+        "Then read the JSON file at /tmp/osint_brief_work.json.\n\n"
+        "The shell script outputs a work intelligence template with placeholders. You must fill in ALL placeholders before posting:\n\n"
+        "1. **Bottom Line:** 1-2 sentence summary of the biggest federal contracting developments.\n\n"
+        "2. **Competitor Moves:** News about Palantir, Bison Computing, and other SHIELD IDIQ holders. New contracts, press releases, hiring moves, strategy shifts. Use → Source: Headline format for links.\n\n"
+        "3. **Vehicle & Program Updates:** SHIELD IDIQ, JWCC, GSA FAST, CDAO, Maven developments. New RFPs, ceiling mods, on-ramps. Use → Source: Headline format.\n\n"
+        "4. **DoD/MDA Policy:** Budget changes, acquisition policy shifts, AI/defense tech priorities. Use → Source: Headline format.\n\n"
+        "5. **Industry Trends:** Defense tech consolidation, small business set-aside changes, cybersecurity requirements. Use → Source: Headline format.\n\n"
+        "6. **Contract Actions:** Check the fed-contracts data in the JSON. Highlight 2-3 notable awards - large amounts, new competitors, strategic significance. NOT a full dump. Format as: • Recipient — $Amount Description (Date)\n\n"
+        "7. **Elevated Watch:** Topics to monitor - upcoming RFPs, expiring contracts, budget markups.\n\n"
+        "Keep the PDB structure intact: bold headers, → links, no emoji, no bullet points in narratives. Do NOT include Source Health or Data Notes.\n\n"
+        "Post the completed brief to Slack #work using the message tool with channel=\"slack\" and chat_id=\"C0AG24C1GFL\".\n\n"
+        "IMPORTANT: Do NOT use subagents. Do NOT use curl for Slack. Use the message tool directly to post to Slack."
+    )
     live_feed_msg = (
         "Run the live-feed desk: execute "
         f"`cd {skill} && bash deliver.sh --live-feed --json /tmp/osint_live_feed.json`, "
@@ -110,6 +131,7 @@ def main() -> int:
     planned = [
         ("osint-intel", args.intel_cron, intel_msg),
         ("osint-investing", args.investing_cron, investing_msg),
+        ("osint-work", args.work_cron, work_msg),
         ("osint-weather", args.weather_cron, weather_msg),
         ("osint-live-feed", args.live_feed_cron, live_feed_msg),
     ]
