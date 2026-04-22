@@ -1077,7 +1077,7 @@ PRECIOUS METALS
 "
   fi
 
-  if [[ "$DESK" == "weather" && -n "$forecast_section" ]]; then
+  if [[ "$DESK" != "weather" && -n "$forecast_section" ]]; then
     body+="
 FORECAST MODELS (ECMWF / GFS / NAM, °F / mph)
 ${forecast_section}
