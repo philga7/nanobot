@@ -23,6 +23,43 @@
     "cagayan de oro": 2.0,
     "fort magsaysay": 2.0
   },
+  "work_contracting_topics": {
+    "valley it": 5.0,
+    "valley it solutions": 6.0,
+    "palantir": 5.0,
+    "bison computing": 4.5,
+    "bison group": 4.5,
+    "shield": 5.0,
+    "shield idiq": 5.0,
+    "mda": 4.0,
+    "missile defense": 4.0,
+    "cdao": 4.0,
+    "maven": 4.0,
+    "jwcc": 4.0,
+    "gsa fast": 3.5,
+    "stars iii": 3.5,
+    "oasis+": 3.5,
+    "dod ai": 4.0,
+    "defense ai": 4.0,
+    "defense tech": 3.5,
+    "acquisition": 3.0,
+    "federal contracting": 3.0,
+    "contract award": 2.0,
+    "task order": 2.0,
+    "idiq": 2.5,
+    "defense budget": 3.5,
+    "cybersecurity": 3.0,
+    "anduril": 3.0,
+    "scale ai": 3.0,
+    "booz allen": 2.5,
+    "leidos": 2.5,
+    "saic": 2.5,
+    "raytheon": 2.0,
+    "lockheed": 2.0,
+    "northrop": 2.0,
+    "small business": 2.5,
+    "set-aside": 2.5
+  },
   "ignored_topic_phrases": [],
   "source_tier_classification": {
     "mainstream": [
@@ -190,6 +227,26 @@
         "center": ["34.12", "-83.58"]
       },
       "forecast_models": ["GFS", "NAM", "ECMWF"]
+    },
+    "work": {
+      "channel": "C0AG24C1GFL",
+      "schedule": "0 7 * * 1-5",
+      "tz": "America/New_York",
+      "sources": {
+        "api": ["usaspending"],
+        "rss": [
+          "defense-one",
+          "breaking-defense",
+          "war-on-the-rocks",
+          "dod-news",
+          "white-house",
+          "federal-news-network",
+          "nextgov"
+        ],
+        "twitter": []
+      },
+      "topic_weights": "work_contracting_topics",
+      "geo_filter": null
     }
   }
 }

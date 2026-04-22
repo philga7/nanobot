@@ -382,6 +382,20 @@ if normalized="$(
       )
       | gsub("^\\s+"; "")
       | gsub("\\s+$"; "");
+    def date_line_match(s):
+      (s | test("^[A-Za-z]{3}\\s+[A-Za-z]{3}\\s+[0-9]{1,2}\\s+[0-9]{2}:[0-9]{2}:[0-9]{2}\\s+[+-][0-9]{4}\\s+[0-9]{4}$"));
+    def date_from_text(s):
+      (try (s | capture("date:\\s*(?<d>[A-Za-z]{3}\\s+[A-Za-z]{3}\\s+[0-9]{1,2}\\s+[0-9]{2}:[0-9]{2}:[0-9]{2}\\s+[+-][0-9]{4}\\s+[0-9]{4})").d) catch null);
+    def date_to_iso(s):
+      if (s // "") == "" then null
+      else (try (s | strptime("%a %b %d %H:%M:%S %z %Y") | mktime | strftime("%Y-%m-%dT%H:%M:%SZ")) catch null)
+      end;
+    def tweet_url_from_text(s):
+      (try (s | capture("url:\\s*(?<u>https?://\\S+)").u) catch null);
+    def tweet_url_from_line(s):
+      (try (s | capture("(?<u>https?://x\\.com/[^/\\s]+/status/[0-9]+)").u) catch null);
+    def tweet_id_from_url(s):
+      (try (s | capture("/status/(?<id>[0-9]+)").id) catch null);
     def nonempty_str(s):
       ((s // "") | tostring | if length > 0 then . else empty end);
     def rss_canon_url:
@@ -422,16 +436,22 @@ if normalized="$(
       | if (type == "object") and has("accounts") and (.accounts | type == "object") then
           (.accounts | to_entries[] | .value as $acct | ($acct.items // [])[]
           | (.text // .content // "") as $rawt
-          | (($rawt | tostring | [scan("https?://[^\\s\"<>]+")] | .[0] // "")) as $extracted
+          | (unwrap_bird_api($rawt) | tostring) as $raw_unwrapped
+          | ($raw_unwrapped | split("\n") | map(gsub("^\\s+"; "") | gsub("\\s+$"; "")) | map(select(length > 0))) as $raw_lines
+          | ((date_from_text($raw_unwrapped)) // ($raw_lines | map(select(date_line_match(.))) | .[0] // null)) as $raw_date
+          | ((tweet_url_from_text($raw_unwrapped)) // ($raw_lines | map(tweet_url_from_line(.)) | map(select(. != null)) | .[0] // null)) as $extracted
+          | (date_to_iso($raw_date)) as $created_at
+          | (tweet_id_from_url($extracted)) as $tweet_id
           | . + {
             handle: ((.handle // $acct.handle // "unknown") | tostring | ltrimstr("@")),
             text: clean_tweet($rawt),
             source: ($acct.source // .source),
             tier: ($acct.tier // .tier),
             category: ($acct.category // .category),
-            created_at: (.created_at // $acct.created_at // .date),
+            created_at: ($created_at // .created_at // $acct.created_at // .date // null),
+            tweet_id: ($tweet_id // .tweet_id // (tweet_id_from_url(.url // "")) // null),
             url: (
-              if $extracted != "" then $extracted
+              if ($extracted // "") != "" then $extracted
               elif (.url // "") != "" then .url
               elif (.id // null) != null and ((.id | tostring) != "") then "https://x.com/i/web/status/" + (.id | tostring)
               else "" end
@@ -439,12 +459,19 @@ if normalized="$(
           })
         elif type == "object" then
           (.text // .content // "") as $rawt
-          | (($rawt | tostring | [scan("https?://[^\\s\"<>]+")] | .[0] // "")) as $extracted
+          | (unwrap_bird_api($rawt) | tostring) as $raw_unwrapped
+          | ($raw_unwrapped | split("\n") | map(gsub("^\\s+"; "") | gsub("\\s+$"; "")) | map(select(length > 0))) as $raw_lines
+          | ((date_from_text($raw_unwrapped)) // ($raw_lines | map(select(date_line_match(.))) | .[0] // null)) as $raw_date
+          | ((tweet_url_from_text($raw_unwrapped)) // ($raw_lines | map(tweet_url_from_line(.)) | map(select(. != null)) | .[0] // null)) as $extracted
+          | (date_to_iso($raw_date)) as $created_at
+          | (tweet_id_from_url($extracted)) as $tweet_id
           | . + {
             handle: ((.handle // .user // .screen_name // "unknown") | tostring | ltrimstr("@")),
             text: clean_tweet($rawt),
+            created_at: ($created_at // .created_at // .date // null),
+            tweet_id: ($tweet_id // .tweet_id // (tweet_id_from_url(.url // "")) // null),
             url: (
-              if $extracted != "" then $extracted
+              if ($extracted // "") != "" then $extracted
               elif (.url // "") != "" then .url
               elif (.id // null) != null and ((.id | tostring) != "") then "https://x.com/i/web/status/" + (.id | tostring)
               else "" end
@@ -926,6 +953,9 @@ case "$TEMPLATE" in
       intel)
         title="**INTEL SIGNAL — $(iso_to_et_line "$timestamp")**"
         ;;
+      work)
+        title="WORK INTELLIGENCE — $(iso_to_et_line "$timestamp")"
+        ;;
       balikatan)
         title="**BALIKATAN BRIEF — $(iso_to_et_line "$timestamp")**"
         ;;
@@ -980,6 +1010,33 @@ if [[ "$DESK" == "weather" ]]; then
 
 **Key Notes:**
 •   [Agent: 3-5 bullet points on notable trends, changes, things to watch]
+"
+elif [[ "$DESK" == "work" ]]; then
+  body="${title}
+
+**Bottom Line:** [Agent: 1-2 sentence summary of the biggest federal contracting developments]
+
+**Competitor Moves**
+[Agent: narrative summary of competitor activity - new awards, press releases, hiring, strategy shifts]
+→ [Source: Headline]
+
+**Vehicle & Program Updates**
+[Agent: narrative summary of IDIQ/program developments]
+→ [Source: Headline]
+
+**DoD/MDA Policy**
+[Agent: narrative summary of policy/budget changes]
+→ [Source: Headline]
+
+**Industry Trends**
+[Agent: narrative summary of broader defense contracting trends]
+→ [Source: Headline]
+
+**Contract Actions (recent)**
+[Agent: 2-3 notable contract awards from fed-contracts data in this JSON. Not a full dump - just highlights.]
+• [Recipient] - $[Amount] [Description] ([Date])
+
+**Elevated Watch:** [Agent: topics to monitor - upcoming RFPs, expiring contracts, budget markups]
 "
 elif [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]]; then
   source_health_line="$(
