@@ -169,11 +169,10 @@ class MCPToolWrapper(Tool):
 
         for attempt in range(2):  # At most 1 retry
             try:
-                result = await asyncio.wait_for(
-                    self._session.call_tool(self._original_name, arguments=kwargs),
-                    timeout=self._tool_timeout,
-                )
-            except asyncio.TimeoutError:
+                # Let the MCP transport enforce call timeouts; wrapping call_tool
+                # in wait_for can cancel shared sessions and break subsequent calls.
+                result = await self._session.call_tool(self._original_name, arguments=kwargs)
+            except TimeoutError:
                 logger.warning(
                     "MCP tool '{}' timed out after {}s", self._name, self._tool_timeout
                 )
