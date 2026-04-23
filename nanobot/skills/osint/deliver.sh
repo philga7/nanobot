@@ -1360,6 +1360,13 @@ ${georgia_section_text}
 **Defense & posture** — [Agent: DoD releases, exercises, regional force moves]
 **Cross-cutting patterns** — [Agent: explicit correlations the daily brief does not usually attempt]
 "
+    weekly_ki_line="$(echo "$brief_json" | jq -r '.key_indicators_line // ""' 2>/dev/null || true)"
+    if [[ -n "${weekly_ki_line//[$'\t\r\n ']}" ]]; then
+      body+="
+**Key Indicators**
+${weekly_ki_line}
+"
+    fi
   fi
   if [[ "$TEMPLATE" == "weeklyDigest" ]]; then
     body+="
