@@ -1,0 +1,56 @@
+{
+  "templates": {
+    "intelSignal": {
+      "maxItems": 7,
+      "style": "narrative"
+    },
+    "breakingBullet": {
+      "maxItems": 5,
+      "style": "narrative"
+    },
+    "dailyDigest": {
+      "maxItems": 7,
+      "style": "narrative"
+    },
+    "weeklyDigest": {
+      "maxItems": 15,
+      "style": "narrative"
+    }
+  },
+  "profiles": {
+    "breakingNews": {
+      "minToSurface": 8
+    }
+  },
+  "tuning": {
+    "news": {
+      "topiclessMinScore": 8
+    }
+  },
+  "deliveryPolicy": {
+    "minToNtfy": 12,
+    "notes": "Phone push (ntfy) stays high-threshold; Slack remains archive; Telegram is optional push per routing."
+  },
+  "routing": {
+    "breakingNews": {
+      "slack": true,
+      "telegram": false
+    },
+    "intelSignal": {
+      "slack": true,
+      "telegram": true
+    },
+    "weeklyDigest": {
+      "slack": true,
+      "telegram": true
+    },
+    "dailyDigest": {
+      "slack": true,
+      "telegram": false
+    },
+    "breakingBullet": {
+      "slack": true,
+      "telegram": true
+    }
+  }
+}

@@ -532,6 +532,7 @@ fi
   desk_filt_bool=false
   (( desk_api_len > 0 )) && desk_filt_bool=true
 
+  _bt="${OSINT_BRIEFING_TEMPLATE:-}"
   echo "  \"meta\": {"
   echo "    \"desk\": \"${DESK}\","
   echo "    \"desk_api_filtered\": ${desk_filt_bool},"
@@ -542,6 +543,9 @@ fi
   echo "    \"twitter_items\": ${twitter_item_count},"
   echo "    \"intel_pipeline_available\": ${intel_available},"
   echo "    \"generated_at\": \"${timestamp}\""
+  if [[ -n "${_bt}" ]]; then
+    echo ",    \"brief_template_requested\": \"${_bt}\""
+  fi
   echo '  }'
   echo '}'
 }

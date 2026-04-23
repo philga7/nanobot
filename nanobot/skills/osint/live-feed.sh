@@ -66,7 +66,7 @@ cfp_item_limit="$(echo "$cfg" | jq -r '.cfp_item_limit // 30')"
 twitter_lookback_min="$(echo "$cfg" | jq -r '.twitter_lookback_min // 35')"
 ntfy_weight_threshold="$(echo "$cfg" | jq -r '.ntfy_weight_threshold // 1.3')"
 cross_post_breaking="$(echo "$cfg" | jq -r '.cross_post_breaking // true')"
-breaking_score_threshold="$(echo "$cfg" | jq -r '.breaking_score_threshold // 6')"
+breaking_score_threshold="$(echo "$cfg" | jq -r '.breaking_score_threshold // 10')"
 
 major_keywords_json="$(jq -c '.major_event_keywords // []' "$INTEL_TOPICS" 2>/dev/null || echo '[]')"
 topic_weights_json="$(jq -c --arg k "$weights_key" '
