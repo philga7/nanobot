@@ -19,6 +19,11 @@ def _title_hash(title: str) -> str:
     return hashlib.sha1(t.encode("utf-8")).hexdigest()
 
 
+def _title_hash16(title: str) -> str:
+    t = (title or "").strip().lower()
+    return hashlib.sha256(t.encode("utf-8")).hexdigest()[:16]
+
+
 def _brief_filter_by_manifest(brief: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
     seen: set[str] = set()
     if manifest_path.exists():
@@ -60,6 +65,70 @@ def _brief_save_manifest(manifest_path: Path, titles: list[str]) -> None:
         "count": len(hashes),
     }
     manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _manifest_path(output_dir: Path, desk: str) -> Path:
+    return output_dir / f"last_brief_manifest_{desk}.json"
+
+
+def _load_brief_manifest(output_dir: Path, desk: str) -> dict[str, Any]:
+    path = _manifest_path(output_dir, desk)
+    if not path.exists():
+        return {"desk": desk, "timestamp": None, "items": []}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return raw
+    except Exception:
+        pass
+    return {"desk": desk, "timestamp": None, "items": []}
+
+
+def _write_brief_manifest(output_dir: Path, desk: str, items: list[dict[str, Any]]) -> Path:
+    out_items: list[dict[str, Any]] = []
+    for item in items:
+        title = str(item.get("title") or item.get("headline") or "").strip()
+        if not title:
+            continue
+        out_items.append(
+            {
+                "topic": str(item.get("topic") or "uncategorized"),
+                "headline_hash": _title_hash16(title),
+                "score": float(item.get("score") or 0),
+                "source": str(item.get("source") or "unknown"),
+            }
+        )
+    path = _manifest_path(output_dir, desk)
+    _ensure_parent(path)
+    payload = {
+        "desk": desk,
+        "timestamp": datetime.now(tz=UTC).isoformat(),
+        "items": out_items,
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _mark_ongoing(output_dir: Path, desk: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    prev = _load_brief_manifest(output_dir, desk)
+    prev_by_hash: dict[str, float] = {}
+    for row in prev.get("items") or []:
+        if not isinstance(row, dict):
+            continue
+        hh = str(row.get("headline_hash") or "").strip()
+        if not hh:
+            continue
+        prev_by_hash[hh] = float(row.get("score") or 0)
+
+    out: list[dict[str, Any]] = []
+    for item in items:
+        title = str(item.get("title") or item.get("headline") or "").strip()
+        cur_score = float(item.get("score") or 0)
+        hh = _title_hash16(title)
+        prev_score = prev_by_hash.get(hh)
+        ongoing = prev_score is not None and abs(cur_score - prev_score) <= 1.0
+        out.append({**item, "headline_hash": hh, "ongoing": ongoing})
+    return out
 
 
 def _utc_now() -> datetime:
@@ -237,6 +306,15 @@ def main() -> int:
         metavar="PATH",
         help="Read JSON {\"titles\":[...]} from stdin; write headline hashes for next-brief dedup",
     )
+    parser.add_argument("--write-manifest", action="store_true", help="Write per-desk last brief manifest")
+    parser.add_argument("--load-manifest", action="store_true", help="Load per-desk last brief manifest")
+    parser.add_argument("--mark-ongoing", action="store_true", help="Tag stdin items by prior brief hash/score")
+    parser.add_argument("--desk", help="Desk id for manifest operations")
+    parser.add_argument(
+        "--output-dir",
+        default=str(Path.home() / ".wrenvps" / "intel" / "history"),
+        help="History directory for manifest files",
+    )
     args = parser.parse_args()
 
     selected = [
@@ -247,11 +325,15 @@ def main() -> int:
         args.since,
         args.brief_filter_manifest,
         args.brief_save_manifest,
+        args.write_manifest,
+        args.load_manifest,
+        args.mark_ongoing,
     ]
     if sum(bool(x) for x in selected) != 1:
         parser.error(
             "choose exactly one operation: --check | --add | --prune | --export | --since | "
-            "--brief-filter-manifest | --brief-save-manifest"
+            "--brief-filter-manifest | --brief-save-manifest | --write-manifest | --load-manifest | "
+            "--mark-ongoing"
         )
 
     history_path = Path(args.history).expanduser()
@@ -302,6 +384,37 @@ def main() -> int:
             raise SystemExit("\"titles\" must be an array")
         _brief_save_manifest(manifest, [str(x) for x in titles])
         print(manifest)
+        return 0
+
+    if args.write_manifest:
+        import sys
+
+        if not args.desk:
+            raise SystemExit("--desk is required with --write-manifest")
+        raw_in = json.loads(sys.stdin.read() or "[]")
+        if not isinstance(raw_in, list):
+            raise SystemExit("stdin must be a JSON array of items")
+        out_path = _write_brief_manifest(Path(args.output_dir).expanduser(), args.desk, raw_in)
+        print(out_path)
+        return 0
+
+    if args.load_manifest:
+        if not args.desk:
+            raise SystemExit("--desk is required with --load-manifest")
+        data = _load_brief_manifest(Path(args.output_dir).expanduser(), args.desk)
+        print(json.dumps(data, ensure_ascii=False))
+        return 0
+
+    if args.mark_ongoing:
+        import sys
+
+        if not args.desk:
+            raise SystemExit("--desk is required with --mark-ongoing")
+        raw_in = json.loads(sys.stdin.read() or "[]")
+        if not isinstance(raw_in, list):
+            raise SystemExit("stdin must be a JSON array of items")
+        out = _mark_ongoing(Path(args.output_dir).expanduser(), args.desk, raw_in)
+        print(json.dumps(out, ensure_ascii=False))
         return 0
 
     return 0

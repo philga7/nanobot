@@ -12,6 +12,18 @@
       "maxItems": 7,
       "style": "narrative"
     },
+    "narrativeSignal": {
+      "maxItems": 7,
+      "style": "narrative",
+      "includeScore": false,
+      "includeOsintTags": false,
+      "includeAnalystNote": true,
+      "includeDossier": false
+    },
+    "weeklyIntel": {
+      "maxItems": 15,
+      "style": "narrative"
+    },
     "weeklyDigest": {
       "maxItems": 15,
       "style": "narrative"
@@ -32,6 +44,14 @@
     "notes": "Phone push (ntfy) stays high-threshold; Slack remains archive; Telegram is optional push per routing."
   },
   "routing": {
+    "intel": {
+      "template": "narrativeSignal",
+      "telegram": true
+    },
+    "intel-weekly": {
+      "template": "weeklyIntel",
+      "telegram": true
+    },
     "breakingNews": {
       "slack": true,
       "telegram": false

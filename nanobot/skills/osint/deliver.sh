@@ -23,6 +23,8 @@ CHANNEL_ID="${OSINT_BRIEFING_SLACK_CHANNEL_ID:-C0AGWCQ1ZDE}"
 DESK="${OSINT_DESK:-intel}"
 CHANNEL_OVERRIDE=false
 LIVE_FEED_MODE=false
+TEMPLATE_OVERRIDE=""
+PUSH_TELEGRAM=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,8 +43,12 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --template)
-      TEMPLATE="${2:-$TEMPLATE}"
+      TEMPLATE_OVERRIDE="${2:-}"
       shift 2
+      ;;
+    --push-telegram)
+      PUSH_TELEGRAM=true
+      shift
       ;;
     --channel-id)
       CHANNEL_ID="${2:-$CHANNEL_ID}"
@@ -360,6 +366,22 @@ if [[ ! -x "$BRIEF_SCRIPT" ]]; then
   exit 1
 fi
 
+if [[ -f "$INTEL_SCORING" ]] && command -v jq >/dev/null 2>&1; then
+  if [[ -n "$TEMPLATE_OVERRIDE" ]]; then
+    TEMPLATE="$TEMPLATE_OVERRIDE"
+  else
+    routed_template="$(
+      jq -r --arg d "$DESK" '.routing[$d].template // empty' "$INTEL_SCORING" 2>/dev/null || true
+    )"
+    if [[ -n "${routed_template:-}" && "$routed_template" != "null" ]]; then
+      TEMPLATE="$routed_template"
+    fi
+  fi
+fi
+if [[ "$TEMPLATE" == "weeklyIntel" ]]; then
+  TEMPLATE="weeklyDigest"
+fi
+
 brief_json="$(bash "$BRIEF_SCRIPT" $([[ "$FORCE" == "true" ]] && echo "--force") --desk "$DESK")"
 
 # Normalize nested intel RSS/Twitter shapes (feeds.*.items / accounts.*.items) to flat
@@ -620,9 +642,14 @@ fi
 
 # Telegram push (optional): routing in scoring.json overrides desk defaults.
 telegram_push="false"
+if [[ "$PUSH_TELEGRAM" == "true" ]]; then
+  telegram_push="true"
+fi
 if [[ -f "$INTEL_SCORING" ]] && command -v jq >/dev/null 2>&1; then
   _tr="$(jq -r --arg t "$TEMPLATE" '(.routing[$t].telegram // "") | tostring' "$INTEL_SCORING" 2>/dev/null || echo "")"
-  if [[ "$_tr" == "true" ]]; then
+  if [[ "$PUSH_TELEGRAM" == "true" ]]; then
+    telegram_push="true"
+  elif [[ "$_tr" == "true" ]]; then
     telegram_push="true"
   elif [[ "$_tr" == "false" ]]; then
     telegram_push="false"
@@ -670,17 +697,86 @@ if [[ -n "$topic_weights_key" && -f "$INTEL_TOPICS" && -f "$TOPICLESS_FILTER_JQ"
   )"
 fi
 
+# Build a unified scored set, mark ongoing against previous brief manifest, then split items/overflow.
+scored_items_json="[]"
+if command -v jq >/dev/null 2>&1; then
+  scored_items_json="$(
+    echo "$brief_json" | jq -c --argjson weights "$topic_weights_inline" '
+      def tw($txt):
+        ($weights | to_entries
+          | map(. as $e | select((($txt // "") | tostring | ascii_downcase) | test($e.key; "i")) | $e.value)
+          | add // 0);
+      def topics($txt):
+        ($weights | to_entries
+          | map(. as $e | select((($txt // "") | tostring | ascii_downcase) | test($e.key; "i")) | ($e.key | tostring))
+          | unique);
+      [
+        ((.rss // [])[] | {
+          type: "rss",
+          title: (.title // .headline // .text // ""),
+          source: (.source // .feed // "RSS"),
+          url: (.url // .link // ""),
+          topic: ((topics(.title // .headline // .text // "") | .[0]) // "uncategorized"),
+          topics: topics(.title // .headline // .text // ""),
+          score: (tw(.title // .headline // .text // ""))
+        }),
+        ((.twitter // [])[] | {
+          type: "twitter",
+          title: (.text // .content // ""),
+          source: ("@" + ((.handle // .user // .screen_name // "unknown") | tostring | ltrimstr("@"))),
+          url: (.url // ""),
+          topic: ((topics(.text // .content // "") | .[0]) // "uncategorized"),
+          topics: topics(.text // .content // ""),
+          score: (tw(.text // .content // ""))
+        })
+      ]
+      | map(select((.title | tostring | test("^\\s*$") | not)))
+    ' 2>/dev/null || echo "[]"
+  )"
+fi
+if [[ -x "$DEDUP_PY" ]] && command -v python3 >/dev/null 2>&1 && [[ -n "$DESK" ]]; then
+  scored_items_json="$(
+    printf '%s' "$scored_items_json" \
+      | python3 "$DEDUP_PY" --mark-ongoing --desk "$DESK" --output-dir "${INTEL_DIR}/history" 2>/dev/null \
+      || echo "$scored_items_json"
+  )"
+fi
+split_bundle='{}'
+if command -v jq >/dev/null 2>&1; then
+  split_bundle="$(
+    echo "$scored_items_json" | jq -c --argjson max "$max_items" '
+      sort_by(.ongoing, -(.score // 0))
+      | {
+          items: .[0:$max],
+          overflow: (.[ $max: ] | map({headline: .title, source: .source})),
+          ongoing: ([ .[] | select(.ongoing == true) | {topic: (.topic // "uncategorized")} ] | unique_by(.topic))
+        }
+    ' 2>/dev/null || echo '{"items":[],"overflow":[],"ongoing":[]}'
+  )"
+fi
+brief_json="$(
+  echo "$brief_json" | jq -c \
+    --argjson b "$split_bundle" \
+    '.items = ($b.items // []) | .overflow = ($b.overflow // []) | .ongoing = ($b.ongoing // [])
+     | .meta = ((.meta // {}) * {selected_items: ((.items // []) | length), overflow_items: ((.overflow // []) | length)})' \
+    2>/dev/null || echo "$brief_json"
+)"
+overflow_count="$(echo "$brief_json" | jq -r '(.overflow // []) | length' 2>/dev/null || echo 0)"
+if [[ "$overflow_count" =~ ^[0-9]+$ ]] && (( overflow_count > 0 )); then
+  echo "OSINT deliver: capped at ${max_items} items, overflow=${overflow_count}" >&2
+fi
+
 # Enrich JSON for downstream agents (Slack/Telegram routing hints)
 if command -v jq >/dev/null 2>&1; then
   if [[ "${telegram_push:-false}" == "true" ]]; then
     brief_json="$(
       echo "$brief_json" | jq -c --arg t "$TEMPLATE" \
-        '.meta = ((.meta // {}) * {osint_template:$t, osint_telegram_push:true})' 2>/dev/null || echo "$brief_json"
+        '.meta = ((.meta // {}) * {osint_template:$t, osint_telegram_push:true}) | .push_telegram = true' 2>/dev/null || echo "$brief_json"
     )"
   else
     brief_json="$(
       echo "$brief_json" | jq -c --arg t "$TEMPLATE" \
-        '.meta = ((.meta // {}) * {osint_template:$t, osint_telegram_push:false})' 2>/dev/null || echo "$brief_json"
+        '.meta = ((.meta // {}) * {osint_template:$t, osint_telegram_push:false}) | .push_telegram = false' 2>/dev/null || echo "$brief_json"
     )"
   fi
 fi
@@ -1194,7 +1290,10 @@ elif [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]]; then
   )"
   topic_sections_text="$(echo "$topic_bundle" | jq -r '.topic_sections // ""' 2>/dev/null || true)"
   georgia_section_text="$(echo "$topic_bundle" | jq -r '.georgia_section // ""' 2>/dev/null || true)"
-  also_noted_text="$(echo "$topic_bundle" | jq -r '.also_noted // ""' 2>/dev/null || true)"
+  also_noted_text="$(echo "$brief_json" | jq -r '(.overflow // []) | map("→ " + (.headline // "") + (if (.source // "") != "" then " (" + .source + ")" else "" end)) | join("\n")' 2>/dev/null || true)"
+  if [[ -z "${also_noted_text//[$'\t\r\n ']}" ]]; then
+    also_noted_text="$(echo "$topic_bundle" | jq -r '.also_noted // ""' 2>/dev/null || true)"
+  fi
 
   body="${title}
 "
@@ -1229,11 +1328,11 @@ ${precious_section}
 ${also_noted_text}
 "
   fi
-  _mf_hits="$(echo "$brief_json" | jq -r '.meta.brief_manifest_hits // 0' 2>/dev/null || echo 0)"
-  if [[ "$DESK" == "intel" && "${_mf_hits:-0}" =~ ^[0-9]+$ ]] && (( _mf_hits > 0 )); then
+  ongoing_text="$(echo "$brief_json" | jq -r '(.ongoing // []) | map("→ " + (.topic // "uncategorized") + ": no new developments") | join("\n")' 2>/dev/null || true)"
+  if [[ "$DESK" == "intel" && -n "${ongoing_text//[$'\t\r\n ']}" ]]; then
     body+="
 **Ongoing**
-[Agent: for priority topics with no new headline since the last brief, one line each: → Topic: no new developments]
+${ongoing_text}
 "
   fi
   if [[ "$DESK" == "intel" && -n "${georgia_section_text//[$'\t\r\n ']}" ]]; then
@@ -1261,6 +1360,13 @@ ${georgia_section_text}
 **Defense & posture** — [Agent: DoD releases, exercises, regional force moves]
 **Cross-cutting patterns** — [Agent: explicit correlations the daily brief does not usually attempt]
 "
+    weekly_ki_line="$(echo "$brief_json" | jq -r '.key_indicators_line // ""' 2>/dev/null || true)"
+    if [[ -n "${weekly_ki_line//[$'\t\r\n ']}" ]]; then
+      body+="
+**Key Indicators**
+${weekly_ki_line}
+"
+    fi
   fi
   if [[ "$TEMPLATE" == "weeklyDigest" ]]; then
     body+="
@@ -1355,9 +1461,9 @@ post_slack_message "$CHANNEL_ID" "$body"
 post_telegram_brief "$body"
 post_ntfy_message "OSINT Briefing" "$body"
 
-if [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]] && [[ -n "${topic_bundle:-}" ]] && command -v python3 >/dev/null 2>&1; then
-  echo "$topic_bundle" | jq -c '{titles:(.manifest_titles // [])}' 2>/dev/null \
-    | python3 "$DEDUP_PY" --brief-save-manifest "$BRIEF_MANIFEST" >/dev/null 2>&1 || true
+if [[ "$DESK" != "live-feed" ]] && command -v python3 >/dev/null 2>&1; then
+  echo "$brief_json" | jq -c '.items // []' 2>/dev/null \
+    | python3 "$DEDUP_PY" --write-manifest --desk "$DESK" --output-dir "${INTEL_DIR}/history" >/dev/null 2>&1 || true
 fi
 
 # --- Global dedup: register all posted items in news_history.json ---

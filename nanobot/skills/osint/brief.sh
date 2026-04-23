@@ -404,6 +404,63 @@ if [[ -f "$INTEL_TOPICS" ]] && command -v jq >/dev/null 2>&1; then
   )"
 fi
 
+# Narrative helper structure for agent synthesis:
+# group RSS/Twitter by the strongest matching topic keyword.
+topic_groups_json="$(
+  jq -n -c \
+    --argjson rss "$rss_items_json" \
+    --argjson tw "$twitter_items_json" \
+    --argjson weights "$topic_weights_json" '
+    def pick_topic($txt):
+      ($weights | to_entries
+      | map(. as $e | select((($txt // "") | tostring | ascii_downcase) | test($e.key; "i")) | {k: $e.key, w: (.value | tonumber)})
+      | if length == 0 then {k: "uncategorized", w: 0} else max_by(.w) end);
+    def rows:
+      [
+        ($rss[]? | {title:(.title // .headline // .text // ""), source:(.source // .feed // "RSS"), url:(.url // .link // ""), published:(.published // .pubDate // .pub_date // .date // null), type:"rss"}),
+        ($tw[]? | {title:(.text // .content // ""), source:("@" + ((.handle // .user // .screen_name // "unknown") | tostring | ltrimstr("@"))), url:(.url // ""), published:(.created_at // .date // null), type:"twitter"})
+      ]
+      | map(select((.title | tostring | test("^\\s*$") | not)));
+    (rows | map(. + {topic: (pick_topic(.title).k)})) as $all
+    | ($all | group_by(.topic) | map({
+        topic_name: .[0].topic,
+        items: (.[0:8]),
+        count: length
+      }) | sort_by(-.count))
+  ' 2>/dev/null || echo "[]"
+)"
+
+# Weekly key-indicator one-liner from existing cached API data (no extra calls).
+key_indicators_line="$(
+  jq -n -r \
+    --argjson y "$(jq -c '.markets // {}' "${CACHE_DIR}/yfinance.json" 2>/dev/null || echo '{}')" \
+    --argjson t "$(jq -c '.interest_rates // []' "${CACHE_DIR}/treasury.json" 2>/dev/null || echo '[]')" \
+    --argjson g "$(jq -c '.assets // {}' "${CACHE_DIR}/gold_api.json" 2>/dev/null || echo '{}')" '
+    def mline($obj; $key; $label):
+      ($obj[$key] // null) as $v
+      | if $v == null or ($v.price == null) then empty
+        else
+          ($v.price | tostring | sub("\\.[0-9]{3,}$"; "")) as $p
+          | ($v.change_pct // null) as $c
+          | if $c == null then "\($label): \($p)"
+            else "\($label): \($p) (" + (if $c >= 0 then "+" else "" end) + (($c|tostring)[0:6]) + "%)"
+            end
+        end;
+    def first_rate($arr; $re):
+      (($arr | map(select((.security_desc // "") | test($re; "i"))) | .[0].avg_interest_rate_amt) // null);
+    [
+      (mline($y; "SP500"; "S&P 500")),
+      (if first_rate($t; "10[- ]?Year|10 Yr|10Y") == null then empty else "10Y: " + (first_rate($t; "10[- ]?Year|10 Yr|10Y")|tostring) + "%" end),
+      (if ($g.XAU.price // null) == null then mline($y; "Gold"; "Gold") else "Gold: $" + (($g.XAU.price|tostring) | sub("\\.[0-9]{3,}$"; "")) end),
+      (mline($y; "CrudeOil"; "Oil")),
+      (mline($y; "VIX"; "VIX")),
+      (mline($y; "DXY"; "DXY"))
+    ]
+    | map(select(. != null and . != ""))
+    | if length == 0 then "" else "→ " + join(" | ") end
+  ' 2>/dev/null || true
+)"
+
 # ---------------------------------------------------------------------------
 # Phase 7: Combine all data into single output
 # ---------------------------------------------------------------------------
@@ -510,6 +567,10 @@ fi
   echo "  \"twitter\": ${twitter_items_json},"
 
   echo "  \"topic_weights\": ${topic_weights_json},"
+  echo "  \"topic_groups\": ${topic_groups_json},"
+  echo "  \"key_indicators_line\": $(jq -Rn --arg s "${key_indicators_line:-}" '$s'),"
+  echo '  "overflow": [],'
+  echo '  "ongoing": [],'
 
   source_count=0
   error_count=0
