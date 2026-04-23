@@ -148,6 +148,32 @@ def test_partial_dream_processing_shows_only_remainder(tmp_path) -> None:
     assert "recent question about K8s" in prompt
 
 
+def test_recent_history_entries_are_truncated(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    builder = ContextBuilder(workspace)
+
+    long_entry = "A" * (builder._MAX_RECENT_HISTORY_ENTRY_CHARS + 200)
+    builder.memory.append_history(long_entry)
+
+    prompt = builder.build_system_prompt()
+    assert "# Recent History" in prompt
+    assert "... (truncated)" in prompt
+    assert long_entry not in prompt
+
+
+def test_recent_history_total_size_is_capped(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    builder = ContextBuilder(workspace)
+
+    for i in range(20):
+        builder.memory.append_history(f"entry-{i} " + ("B" * 700))
+
+    prompt = builder.build_system_prompt()
+    lines = [line for line in prompt.splitlines() if line.startswith("- [")]
+    assert lines
+    assert len("\n".join(lines)) <= builder._MAX_RECENT_HISTORY_TOTAL_CHARS + 200
+
+
 def test_execution_rules_in_system_prompt(tmp_path) -> None:
     """Execution rules should appear in the system prompt via default SOUL.md."""
     from nanobot.utils.helpers import sync_workspace_templates

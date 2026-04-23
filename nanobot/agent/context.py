@@ -9,7 +9,12 @@ from typing import Any
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
-from nanobot.utils.helpers import build_assistant_message, current_time_str, detect_image_mime
+from nanobot.utils.helpers import (
+    build_assistant_message,
+    current_time_str,
+    detect_image_mime,
+    truncate_text,
+)
 from nanobot.utils.prompt_templates import render_template
 
 
@@ -19,6 +24,8 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
     _MAX_RECENT_HISTORY = 50
+    _MAX_RECENT_HISTORY_ENTRY_CHARS = 800
+    _MAX_RECENT_HISTORY_TOTAL_CHARS = 6000
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
 
     def __init__(
@@ -62,12 +69,28 @@ class ContextBuilder:
 
         entries = self.memory.read_unprocessed_history(since_cursor=self.memory.get_last_dream_cursor())
         if entries:
-            capped = entries[-self._MAX_RECENT_HISTORY:]
-            parts.append("# Recent History\n\n" + "\n".join(
-                f"- [{e['timestamp']}] {e['content']}" for e in capped
-            ))
+            lines = self._render_recent_history(entries)
+            if lines:
+                parts.append("# Recent History\n\n" + "\n".join(lines))
 
         return "\n\n---\n\n".join(parts)
+
+    def _render_recent_history(self, entries: list[dict[str, Any]]) -> list[str]:
+        """Render bounded recent-history bullets for the system prompt."""
+        capped = entries[-self._MAX_RECENT_HISTORY:]
+        rendered: list[str] = []
+        total_chars = 0
+        for entry in reversed(capped):
+            timestamp = str(entry.get("timestamp", "?"))[:16]
+            content = str(entry.get("content", ""))
+            content = truncate_text(content, self._MAX_RECENT_HISTORY_ENTRY_CHARS)
+            line = f"- [{timestamp}] {content}"
+            if rendered and total_chars + len(line) > self._MAX_RECENT_HISTORY_TOTAL_CHARS:
+                break
+            rendered.append(line)
+            total_chars += len(line)
+        rendered.reverse()
+        return rendered
 
     def _get_identity(self, channel: str | None = None) -> str:
         """Get the core identity section."""
