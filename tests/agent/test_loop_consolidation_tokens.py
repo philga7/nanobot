@@ -194,6 +194,37 @@ async def test_consolidation_persists_summary_for_next_prepare_session(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_consolidation_forces_boundary_without_future_user_turn(tmp_path, monkeypatch) -> None:
+    loop = _make_loop(tmp_path, estimated_tokens=0, context_window_tokens=200)
+    loop.consolidator.archive = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    session = loop.sessions.get_or_create("cli:test")
+    session.messages = [
+        {"role": "user", "content": "u1", "timestamp": "2026-01-01T00:00:00"},
+        {"role": "assistant", "content": "a1", "timestamp": "2026-01-01T00:00:01"},
+        {"role": "assistant", "content": "a2", "timestamp": "2026-01-01T00:00:02"},
+    ]
+    loop.sessions.save(session)
+
+    call_count = [0]
+
+    def mock_estimate(_session, *, session_summary=None):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return (600, "test")
+        return (80, "test")
+
+    loop.consolidator.estimate_session_prompt_tokens = mock_estimate  # type: ignore[method-assign]
+    monkeypatch.setattr(memory_module, "estimate_message_tokens", lambda _m: 300)
+
+    await loop.consolidator.maybe_consolidate_by_tokens(session)
+
+    archived_chunk = loop.consolidator.archive.await_args.args[0]
+    assert [message["content"] for message in archived_chunk] == ["u1", "a1"]
+    assert session.last_consolidated == 2
+
+
+@pytest.mark.asyncio
 async def test_preflight_consolidation_receives_pending_summary(tmp_path) -> None:
     loop = _make_loop(tmp_path, estimated_tokens=100, context_window_tokens=200)
     session = loop.sessions.get_or_create("cli:test")

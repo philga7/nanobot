@@ -19,6 +19,7 @@ from nanobot.utils.helpers import (
     ensure_dir,
     estimate_message_tokens,
     estimate_prompt_tokens_chain,
+    find_legal_message_start,
     strip_think,
 )
 from nanobot.utils.prompt_templates import render_template
@@ -455,6 +456,40 @@ class Consolidator:
 
         return last_boundary
 
+    def pick_forced_consolidation_boundary(
+        self,
+        session: Session,
+        tokens_to_remove: int,
+    ) -> tuple[int, int] | None:
+        """Fallback boundary when no user-turn split exists in the backlog.
+
+        This keeps at least one newest message unconsolidated and trims any
+        illegal tool-result prefix from the remaining suffix so replay can
+        still start from a legal boundary.
+        """
+        start = session.last_consolidated
+        if start >= len(session.messages) - 1 or tokens_to_remove <= 0:
+            return None
+
+        removed_tokens = 0
+        max_end = len(session.messages) - 1  # keep at least one newest message
+        for end_idx in range(start + 1, max_end + 1):
+            removed_tokens += estimate_message_tokens(session.messages[end_idx - 1])
+
+            # Ensure the suffix starts at a legal message boundary.
+            suffix = session.messages[end_idx:]
+            illegal_prefix = find_legal_message_start(suffix) if suffix else 0
+            safe_end_idx = min(max_end, end_idx + illegal_prefix)
+            if safe_end_idx <= start:
+                continue
+
+            if removed_tokens >= tokens_to_remove:
+                return safe_end_idx, removed_tokens
+
+        if max_end > start:
+            return max_end, removed_tokens
+        return None
+
     def _cap_consolidation_boundary(
         self,
         session: Session,
@@ -469,7 +504,8 @@ class Consolidator:
         for idx in range(capped_end, start, -1):
             if session.messages[idx].get("role") == "user":
                 return idx
-        return None
+        # Fallback when there is no user boundary in this window.
+        return capped_end
 
     def estimate_session_prompt_tokens(
         self,
@@ -574,18 +610,30 @@ class Consolidator:
                 return
 
             last_summary = None
+            forced_boundary_count = 0
             for round_num in range(self._MAX_CONSOLIDATION_ROUNDS):
                 if estimated <= target:
                     break
 
                 boundary = self.pick_consolidation_boundary(session, max(1, estimated - target))
                 if boundary is None:
-                    logger.debug(
-                        "Token consolidation: no safe boundary for {} (round {})",
+                    boundary = self.pick_forced_consolidation_boundary(
+                        session,
+                        max(1, estimated - target),
+                    )
+                    if boundary is None:
+                        logger.debug(
+                            "Token consolidation: no safe boundary for {} (round {})",
+                            session.key,
+                            round_num,
+                        )
+                        break
+                    logger.warning(
+                        "Token consolidation: using forced boundary for {} (round {})",
                         session.key,
                         round_num,
                     )
-                    break
+                    forced_boundary_count += 1
 
                 end_idx = boundary[0]
                 end_idx = self._cap_consolidation_boundary(session, end_idx)
@@ -628,6 +676,13 @@ class Consolidator:
                     estimated, source = 0, "error"
                 if estimated <= 0:
                     break
+
+            if forced_boundary_count:
+                logger.warning(
+                    "Token consolidation: forced boundary used {} time(s) for {}",
+                    forced_boundary_count,
+                    session.key,
+                )
 
             # Persist the last summary to session metadata so it can be injected
             # into the runtime context on the next prepare_session() call, aligning
