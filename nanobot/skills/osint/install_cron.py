@@ -78,6 +78,8 @@ def main() -> int:
         "narrative prose (not raw bullet dumps), include **Markets** as one tight line "
         "from yfinance/FRED/treasury/gold data when present, honor **Also noted** and "
         "**Ongoing** sections if populated. "
+        "When NANOBOT_CHANNELS__TELEGRAM__TOKEN and OSINT_TELEGRAM_CHAT_ID are set on the host, "
+        "deliver.sh also pushes the same template to Telegram after Slack (archive vs push). "
         "Do NOT just list raw data points."
     )
     intel_weekly_msg = (
@@ -86,7 +88,8 @@ def main() -> int:
         "--json /tmp/osint_brief_intel_weekly.json. "
         "Read that JSON and produce a fuller synthesis (weeklyDigest template in scoring.json): "
         "cross-source patterns, nine-section OSINT coverage where data exists, and a stronger "
-        "Analyst Note. Post to Slack #intel-signals (C0AGWCQ1ZDE)."
+        "Analyst Note. Post to Slack #intel-signals (C0AGWCQ1ZDE). "
+        "Telegram mirrors automatically when the bot token and OSINT_TELEGRAM_CHAT_ID are configured."
     )
     weather_msg = (
         "Run the OSINT weather desk brief. "

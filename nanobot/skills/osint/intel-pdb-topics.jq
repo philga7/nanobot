@@ -159,14 +159,14 @@ def slug_topic($t):
       | map(select((.lines | length) > 0))
       | map(
           "**" + pretty_topic(.topic) + "**\n"
-            + "[Agent: write 1-2 sentence narrative summary]\n"
+            + "[Agent: 1–2 tight sentences of prose only — no bullet lists under this heading]\n"
             + (.lines | join("\n"))
         )
       | join("\n\n")
     ),
     georgia_section: (
       if ($geo_lines | length) == 0 then ""
-      else "[Agent: write 1-2 sentence summary]\n" + ($geo_lines | join("\n"))
+      else "[Agent: 1–2 sentences of prose only — no bullets]\n" + ($geo_lines | join("\n"))
       end
     ),
     "also_noted": $also_plain,

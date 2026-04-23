@@ -9,6 +9,7 @@ INTEL_DIR="${HOME}/.wrenvps/intel"
 INTEL_TOPICS="${INTEL_DIR}/config/topics.json"
 INTEL_SOURCES_CFG="${INTEL_DIR}/config/sources.json"
 DEDUP_PY="${SCRIPT_DIR}/sources/dedup.py"
+TELEGRAM_SEND_PY="${SCRIPT_DIR}/sources/telegram_send.py"
 HISTORY_PATH="${INTEL_DIR}/history/news_history.json"
 INTEL_SCORING="${INTEL_DIR}/config/scoring.json"
 TOPICLESS_FILTER_JQ="${SCRIPT_DIR}/topicless-filter.jq"
@@ -100,6 +101,27 @@ post_ntfy_message() {
     "${auth_header[@]}" \
     -d "$body" \
     "$ntfy_target" >/dev/null || true
+}
+
+# Optional push copy: NANOBOT_CHANNELS__TELEGRAM__TOKEN + OSINT_TELEGRAM_CHAT_ID (user or channel id).
+post_telegram_brief() {
+  local body="$1"
+  [[ "${telegram_push:-false}" == "true" ]] || return 0
+  local chat="${OSINT_TELEGRAM_CHAT_ID:-}"
+  [[ -n "$chat" ]] || return 0
+  [[ -f "$TELEGRAM_SEND_PY" ]] || return 0
+  local py=""
+  for candidate in \
+    "${SCRIPT_DIR}/../../../.venv/bin/python" \
+    "${SCRIPT_DIR}/../../../../.venv/bin/python" \
+    "$(command -v python3 2>/dev/null)"; do
+    if [[ -x "$candidate" ]]; then
+      py="$candidate"
+      break
+    fi
+  done
+  [[ -n "$py" ]] || return 0
+  printf '%s' "$body" | "$py" "$TELEGRAM_SEND_PY" "$chat" >/dev/null 2>&1 || true
 }
 
 # ISO briefing time (…T…Z) → "19 Apr 2026, 2:00 PM ET" for PDB titles (America/New_York).
@@ -596,6 +618,29 @@ if [[ -f "$INTEL_SCORING" ]] && command -v jq >/dev/null 2>&1; then
   fi
 fi
 
+# Telegram push (optional): routing in scoring.json overrides desk defaults.
+telegram_push="false"
+if [[ -f "$INTEL_SCORING" ]] && command -v jq >/dev/null 2>&1; then
+  _tr="$(jq -r --arg t "$TEMPLATE" '(.routing[$t].telegram // "") | tostring' "$INTEL_SCORING" 2>/dev/null || echo "")"
+  if [[ "$_tr" == "true" ]]; then
+    telegram_push="true"
+  elif [[ "$_tr" == "false" ]]; then
+    telegram_push="false"
+  else
+    case "$DESK" in
+      intel|balikatan)
+        case "$TEMPLATE" in intelSignal|weeklyDigest|breakingBullet) telegram_push="true" ;; esac
+        ;;
+    esac
+  fi
+else
+  case "$DESK" in
+    intel|balikatan)
+      case "$TEMPLATE" in intelSignal|weeklyDigest|breakingBullet) telegram_push="true" ;; esac
+      ;;
+  esac
+fi
+
 # "What changed since yesterday": drop rows matching last brief headline hashes
 if [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]] && [[ -f "$BRIEF_MANIFEST" ]] && command -v python3 >/dev/null 2>&1; then
   filtered="$(
@@ -623,6 +668,21 @@ if [[ -n "$topic_weights_key" && -f "$INTEL_TOPICS" && -f "$TOPICLESS_FILTER_JQ"
   brief_json="$(
     echo "$brief_json" | jq -c '.meta = ((.meta // {}) * {rss_items: (.rss | length), twitter_items: (.twitter | length)})' 2>/dev/null || echo "$brief_json"
   )"
+fi
+
+# Enrich JSON for downstream agents (Slack/Telegram routing hints)
+if command -v jq >/dev/null 2>&1; then
+  if [[ "${telegram_push:-false}" == "true" ]]; then
+    brief_json="$(
+      echo "$brief_json" | jq -c --arg t "$TEMPLATE" \
+        '.meta = ((.meta // {}) * {osint_template:$t, osint_telegram_push:true})' 2>/dev/null || echo "$brief_json"
+    )"
+  else
+    brief_json="$(
+      echo "$brief_json" | jq -c --arg t "$TEMPLATE" \
+        '.meta = ((.meta // {}) * {osint_template:$t, osint_telegram_push:false})' 2>/dev/null || echo "$brief_json"
+    )"
+  fi
 fi
 
 # Raw JSON for agent-synthesized briefs (no jq report, Slack, or ntfy)
@@ -700,9 +760,9 @@ if [[ -f "$KEY_INDICATORS_JQ" ]]; then
   fi
 fi
 
-# --- PRECIOUS METALS (investing desk) ---
+# --- PRECIOUS METALS (investing desk, or merged intel desk) ---
 precious_section=""
-if [[ "$DESK" == "investing" ]]; then
+if [[ "$DESK" == "investing" || "$DESK" == "intel" ]]; then
   threshold="$(echo "$desk_json" | jq -c '.precious_metals.alert_threshold_pct // 5.0' 2>/dev/null || echo "5.0")"
   precious_section="$(
     echo "$brief_json" | jq -r --argjson th "$threshold" '
@@ -805,7 +865,8 @@ ${detail_lines}"
   fi
 fi
 
-# --- RSS section: ranked by topic weight desc, then recency desc, top 10 ---
+# --- RSS section: ranked hints for narrative synthesis (no • bullets; agent writes prose) ---
+_feed_cap="$(printf '%d' "${max_items:-7}" 2>/dev/null || echo 7)"
 rss_section=""
 if (( rss_items > 0 )); then
   rss_section="$(
@@ -814,10 +875,11 @@ if (( rss_items > 0 )); then
       --argjson mainstream "$tier_mainstream_inline" \
       --argjson alternative "$tier_alternative_inline" \
       --argjson fringe "$tier_fringe_inline" \
+      --argjson cap "$_feed_cap" \
     '
       def score(text):
         ($weights | to_entries
-          | map(. as $e | select((text | tostring | ascii_downcase) | test($e.key | ascii_downcase)) | $e.value)
+          | map(. as $e | select((text | tostring | ascii_downcase) | test($e.key; "i")) | $e.value)
           | add // 0);
 
       def tier(src):
@@ -838,7 +900,7 @@ if (( rss_items > 0 )); then
           {items: [], used: {}};
           . as $acc
           | ($acc.used[$row._src] // 0) as $n
-          | if ($acc.items | length) >= 10 then $acc
+          | if ($acc.items | length) >= $cap then $acc
             elif $n >= 2 then $acc
             else {
                 items: ($acc.items + [$row]),
@@ -847,13 +909,13 @@ if (( rss_items > 0 )); then
             end
         )
       | .items
-      | map(. as $row | "• [" + $row._src + "]" + tier($row._src) + " " + ($row._text | tostring | if length > 150 then .[0:150] + "..." else . end) + (if ($row.url // "" | test("^https?://")) then "\n  → " + $row.url else "" end))
+      | map(. as $row | "→ [" + $row._src + "]" + tier($row._src) + " " + ($row._text | tostring | if length > 150 then .[0:150] + "..." else . end) + (if ($row.url // "" | test("^https?://")) then "\n  → " + $row.url else "" end))
       | .[]
     ' 2>/dev/null || true
   )"
 fi
 
-# --- Twitter/X section ---
+# --- Twitter/X section (same narrative-hint style) ---
 twitter_section=""
 if (( twitter_items > 0 )); then
   twitter_section="$(
@@ -862,6 +924,7 @@ if (( twitter_items > 0 )); then
       --argjson mainstream "$tier_mainstream_inline" \
       --argjson alternative "$tier_alternative_inline" \
       --argjson fringe "$tier_fringe_inline" \
+      --argjson cap "$_feed_cap" \
     '
       def strip_first_line_handle(text):
         (text | split("\n")) as $ln
@@ -904,7 +967,7 @@ if (( twitter_items > 0 )); then
         | gsub("\\s+$"; "");
       def score(text):
         ($weights | to_entries
-          | map(. as $e | select((text | tostring | ascii_downcase) | test($e.key | ascii_downcase)) | $e.value)
+          | map(. as $e | select((text | tostring | ascii_downcase) | test($e.key; "i")) | $e.value)
           | add // 0);
 
       def tier(handle):
@@ -921,8 +984,8 @@ if (( twitter_items > 0 )); then
         })
       | map(select((._text | tostring | test("^\\s*$") | not)))
       | sort_by(. as $row | [-(score($row._text)), ($row._ts | . as $t | -((if $t == "" then 0 else (try ($t | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch 0) end)))])
-      | .[:10]
-      | map(. as $row | "• @" + $row._handle + tier($row._handle) + ": " + ($row._text | tostring | if length > 200 then .[0:200] + "..." else . end) + (if ($row.url // "" | test("^https?://")) then "\n  → " + $row.url else "" end))
+      | .[:$cap]
+      | map(. as $row | "→ @" + $row._handle + tier($row._handle) + ": " + ($row._text | tostring | if length > 200 then .[0:200] + "..." else . end) + (if ($row.url // "" | test("^https?://")) then "\n  → " + $row.url else "" end))
       | .[]
     ' 2>/dev/null || true
   )"
@@ -945,7 +1008,7 @@ if [[ "$DESK" == "intel" ]] && (( rss_items > 0 )); then
           )
         ))
       | .[:5]
-      | map("• [" + (.source // .feed // "RSS") + "] " + (.title // .headline // .text // "(no title)") + (if ((.url // "") | test("^https?://")) then "\n  → " + .url else "" end))
+      | map("→ [" + (.source // .feed // "RSS") + "] " + (.title // .headline // .text // "(no title)") + (if ((.url // "") | test("^https?://")) then "\n  → " + .url else "" end))
       | .[]
     ' 2>/dev/null || true
   )"
@@ -979,11 +1042,11 @@ if [[ -n "$topic_weights_key" && -n "$high_weight_topics" && ( (( rss_items > 0 
           nonempty(.title // .headline // .text // "")
           and (matches(.title // .headline // .text // "")
             or matches(.source // .feed // ""))
-        )) | .[:5] | map("• [RSS/" + (.source // .feed // "?") + "] " + trunc_rss(.title // .headline // .text // "") + (if ((.url // "") | test("^https?://")) then "\n  → " + .url else "" end))),
+        )) | .[:5] | map("→ [RSS/" + (.source // .feed // "?") + "] " + trunc_rss(.title // .headline // .text // "") + (if ((.url // "") | test("^https?://")) then "\n  → " + .url else "" end))),
         (.twitter // [] | map(select(
           nonempty(.text // .content // "")
           and matches(.text // .content // "")
-        )) | .[:5] | map("• [TW/@" + ((.handle // .user // .screen_name // "?") | ltrimstr("@")) + "] " + trunc_tw(.text // .content // "") + (if ((.url // "") | test("^https?://")) then "\n  → " + .url else "" end)))
+        )) | .[:5] | map("→ [TW/@" + ((.handle // .user // .screen_name // "?") | ltrimstr("@")) + "] " + trunc_tw(.text // .content // "") + (if ((.url // "") | test("^https?://")) then "\n  → " + .url else "" end)))
       ]
       | add // []
       | .[]
@@ -1019,10 +1082,18 @@ case "$TEMPLATE" in
         title="WEATHER BRIEF — ${et_time}"
         ;;
       intel)
-        title="**INTEL SIGNAL — $(iso_to_et_line "$timestamp")**"
+        if [[ "$TEMPLATE" == "weeklyDigest" ]]; then
+          title="**INTEL WEEKLY — $(iso_to_et_line "$timestamp")**"
+        else
+          title="**INTEL SIGNAL — $(iso_to_et_line "$timestamp")**"
+        fi
         ;;
       balikatan)
-        title="**BALIKATAN BRIEF — $(iso_to_et_line "$timestamp")**"
+        if [[ "$TEMPLATE" == "weeklyDigest" ]]; then
+          title="**BALIKATAN WEEKLY — $(iso_to_et_line "$timestamp")**"
+        else
+          title="**BALIKATAN BRIEF — $(iso_to_et_line "$timestamp")**"
+        fi
         ;;
       *)
         title=":satellite: INTEL SIGNAL | OSINT Brief"
@@ -1145,6 +1216,12 @@ ${topic_sections_text}
 **Markets**
 [Agent: one compact line from JSON (yfinance / treasury / gold-api / EIA if present). Example: S&P 5,XXX (+X.X%) | 10Y X.XX% | Gold \$X,XXX | Oil \$XX — use → links where helpful]
 "
+    if [[ -n "${precious_section//[$'\t\r\n ']}" ]]; then
+      body+="
+**Precious metals (raw)**
+${precious_section}
+"
+    fi
   fi
   if [[ -n "${also_noted_text//[$'\t\r\n ']}" ]]; then
     body+="
@@ -1170,9 +1247,30 @@ ${georgia_section_text}
 **Elevated Watch:** ${elevated_watch_topics}
 "
   fi
-  body+="
+  if [[ "$TEMPLATE" == "weeklyDigest" ]]; then
+    body+="
+**Weekly OSINT sweep (final post must be narrative paragraphs — no bullet lists in these section bodies; two sentences max per heading)**
+**Geopolitics** — [Agent: integrate GDELT, RSS, and social lines above into tight prose]
+**Markets & macro** — [Agent: fold yfinance, FRED, Treasury, gold/EIA cues; link only where it helps]
+**Domestic security** — [Agent: homeland, LE, border, critical infrastructure signals from JSON]
+**Elections & governance** — [Agent: only if JSON supports it; otherwise state no material change]
+**Cyber** — [Agent: CISA KEV / notable intrusions / policy shifts from JSON]
+**Energy & commodities** — [Agent: power markets, oil/gas, grids, outages]
+**Infrastructure & logistics** — [Agent: transport, ports, telecom, space if present]
+**Sanctions & trade** — [Agent: OFAC / OpenSanctions / trade controls]
+**Defense & posture** — [Agent: DoD releases, exercises, regional force moves]
+**Cross-cutting patterns** — [Agent: explicit correlations the daily brief does not usually attempt]
+"
+  fi
+  if [[ "$TEMPLATE" == "weeklyDigest" ]]; then
+    body+="
+**Analyst Note (weekly)** — [Agent: deeper pattern read — what changed structurally this week, what to watch next week, confidence level]
+"
+  else
+    body+="
 **Analyst Note:** [Agent: write assessment of big stories, what to watch next]
 "
+  fi
   body+="
 **Source Health:** ${source_health_line}
 "
@@ -1194,10 +1292,10 @@ ${api_section}
 "
   fi
 
-  if [[ "$DESK" == "investing" && -n "$precious_section" ]]; then
+  if [[ ( "$DESK" == "investing" || "$DESK" == "intel" ) && -n "$precious_section" ]]; then
     body+="
-PRECIOUS METALS
-• ${precious_section}
+PRECIOUS METALS (data line — fold into narrative if posting prose)
+${precious_section}
 "
   fi
 
@@ -1210,28 +1308,28 @@ ${forecast_section}
 
   if [[ -n "$elevated_items" ]]; then
     body+="
-ELEVATED — Priority Topics (Iran, Israel, ICE, Tariffs, DOGE, etc.)
+ELEVATED — Priority topics (synthesize as narrative; lines below are hints, not bullets to paste)
 ${elevated_items}
 "
   fi
 
   if [[ -n "$rss_section" ]]; then
     body+="
-RSS FEEDS (recent headlines)
+RSS — ranked hints for narrative synthesis (use → lines; write paragraphs in final brief)
 ${rss_section}
 "
   fi
 
   if [[ -n "$twitter_section" ]]; then
     body+="
-TWITTER/X SIGNALS
+TWITTER / X — ranked hints for narrative synthesis
 ${twitter_section}
 "
   fi
 
   if [[ -n "$georgia_rss" ]]; then
     body+="
-GEORGIA DESK
+GEORGIA DESK (hints → narrative)
 ${georgia_rss}
 "
   fi
@@ -1254,6 +1352,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
 fi
 
 post_slack_message "$CHANNEL_ID" "$body"
+post_telegram_brief "$body"
 post_ntfy_message "OSINT Briefing" "$body"
 
 if [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]] && [[ -n "${topic_bundle:-}" ]] && command -v python3 >/dev/null 2>&1; then
@@ -1280,4 +1379,4 @@ if [[ -x "$DEDUP_PY" ]] && [[ "$DRY_RUN" != "true" ]] && [[ "$DESK" != "live-fee
   fi
 fi
 
-echo "OSINT deliver: desk=${DESK} template=${TEMPLATE} channel=${CHANNEL_ID}" >&2
+echo "OSINT deliver: desk=${DESK} template=${TEMPLATE} channel=${CHANNEL_ID} telegram_push=${telegram_push:-false}" >&2

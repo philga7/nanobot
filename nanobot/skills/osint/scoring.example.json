@@ -6,7 +6,7 @@
     },
     "breakingBullet": {
       "maxItems": 5,
-      "style": "bullet"
+      "style": "narrative"
     },
     "dailyDigest": {
       "maxItems": 7,
@@ -27,12 +27,28 @@
       "topiclessMinScore": 8
     }
   },
+  "deliveryPolicy": {
+    "minToNtfy": 12,
+    "notes": "Phone push (ntfy) stays high-threshold; Slack remains archive; Telegram is optional push per routing."
+  },
   "routing": {
     "breakingNews": {
       "slack": true,
       "telegram": false
     },
     "intelSignal": {
+      "slack": true,
+      "telegram": true
+    },
+    "weeklyDigest": {
+      "slack": true,
+      "telegram": true
+    },
+    "dailyDigest": {
+      "slack": true,
+      "telegram": false
+    },
+    "breakingBullet": {
       "slack": true,
       "telegram": true
     }
