@@ -1,8 +1,9 @@
 # stdin: normalized brief JSON (same shape deliver.sh uses after brief_json normalization).
 # --argjson weights: topic key → numeric weight (already ×10 floored like deliver.sh).
 # --argjson promoted_sections: [{topic, lines: [...]}] from key-indicators PDB (optional []).
+# --argjson max_total: max RSS+Twitter rows in the PDB body (rest → also_noted + manifest).
 # --arg desk: "intel" | "balikatan" | ...
-# Output: { "topic_sections": "...", "georgia_section": "..." }
+# Output: { "topic_sections": "...", "georgia_section": "...", "also_noted": "...", "manifest_titles": [...] }
 # topic_sections: PDB topic blocks (RSS + Twitter merged, Georgia excluded on intel desk).
 # georgia_section: lines only (no header); empty string if none.
 
@@ -101,7 +102,23 @@ def slug_topic($t):
 (
   [rss_rows[], tw_rows[]]
   | if $desk == "intel" then map(if ._kind == "rss" and ._geo then empty else . end) else . end
-) as $pool
+) as $pool_raw
+| ($max_total // 999) as $cap0
+| (if ($cap0 | type) == "number" and $cap0 > 0 then $cap0 else 999 end) as $cap
+| ($pool_raw | sort_by(-._w, -._ts) | unique_by(._text)) as $ordered
+| ($ordered | .[0:$cap]) as $pool
+| ($ordered | length) as $olen
+| (if $olen <= $cap then [] else ($ordered | .[$cap:]) end) as $overflow
+| (
+    $overflow
+    | map("→ " + trunc(._text; 200))
+    | join("\n")
+  ) as $also_plain
+| (
+    ($pool + $overflow)
+    | map(._text | tostring | gsub("[[:space:]]+"; " ") | ascii_downcase)
+    | unique
+  ) as $manifest_titles
 | (if $desk == "intel" then [(.rss // [])[] | select(is_georgia_rss(.)) | . as $r | ($r.title // $r.headline // $r.text // "") as $tx | select(nonempty($tx)) | fmt_line(($r.source // $r.feed // "RSS"); trunc($tx; 150))] | unique | .[0:5] else [] end) as $geo_lines
 | ($pool | group_by(._topic)) as $groups
 | ($groups
@@ -111,7 +128,7 @@ def slug_topic($t):
         lines: (
           sort_by(-._w, -._ts)
           | unique_by(._text)
-          | .[0:8]
+          | .[0:6]
           | map(
               if ._kind == "rss" then fmt_line(._src; trunc(._text; 150))
               else fmt_line(._src; trunc(._text; 200))
@@ -151,5 +168,7 @@ def slug_topic($t):
       if ($geo_lines | length) == 0 then ""
       else "[Agent: write 1-2 sentence summary]\n" + ($geo_lines | join("\n"))
       end
-    )
+    ),
+    "also_noted": $also_plain,
+    "manifest_titles": $manifest_titles
   }

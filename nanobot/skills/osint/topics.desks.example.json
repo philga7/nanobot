@@ -100,7 +100,7 @@
   "desks": {
     "intel": {
       "channel": "C0AGWCQ1ZDE",
-      "schedule": "0 7,18 * * *",
+      "schedule": "30 6 * * *",
       "tz": "America/New_York",
       "sources": {
         "api": [
@@ -110,7 +110,14 @@
           "gdelt",
           "bluesky",
           "telegram",
-          "acled"
+          "acled",
+          "yfinance",
+          "fred",
+          "treasury",
+          "eia",
+          "bls",
+          "gscpi",
+          "gold_api"
         ],
         "rss": [
           "times-of-israel",
@@ -137,7 +144,9 @@
           "ga-pundit",
           "georgia-recorder",
           "georgia-recorder-local",
-          "gpb-georgia"
+          "gpb-georgia",
+          "federal-reserve",
+          "sec"
         ],
         "twitter": [
           "mario-nawfal",
@@ -149,7 +158,13 @@
         ]
       },
       "topic_weights": "priority_topics",
-      "geo_filter": null
+      "geo_filter": null,
+      "precious_metals": {
+        "source": "https://api.gold-api.com",
+        "track": ["gold", "silver"],
+        "alert_threshold_pct": 5.0
+      },
+      "mortgage_rates": true
     },
     "live-feed": {
       "channel": "C0ALXXXXXXX",
@@ -177,30 +192,12 @@
         "ntfy_on_high_weight": true,
         "ntfy_weight_threshold": 1.3,
         "cross_post_breaking": true,
-        "breaking_score_threshold": 6,
+        "breaking_score_threshold": 10,
         "waking_hours_only_ntfy": true,
         "waking_hours_start": "07:00",
         "waking_hours_end": "23:00",
         "waking_hours_tz": "America/New_York"
       }
-    },
-    "investing": {
-      "channel": "C0AG5NSKVCL",
-      "schedule": "0 7 * * 1-5",
-      "tz": "America/New_York",
-      "sources": {
-        "api": ["yfinance", "fred", "treasury", "eia", "bls", "gscpi", "gold-api"],
-        "rss": ["federal-reserve", "sec"],
-        "twitter": []
-      },
-      "topic_weights": null,
-      "geo_filter": null,
-      "precious_metals": {
-        "source": "https://api.gold-api.com",
-        "track": ["gold", "silver"],
-        "alert_threshold_pct": 5.0
-      },
-      "mortgage_rates": true
     },
     "weather": {
       "channel": "C0AGWC921TJ",

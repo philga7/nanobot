@@ -10,6 +10,9 @@ INTEL_TOPICS="${INTEL_DIR}/config/topics.json"
 INTEL_SOURCES_CFG="${INTEL_DIR}/config/sources.json"
 DEDUP_PY="${SCRIPT_DIR}/sources/dedup.py"
 HISTORY_PATH="${INTEL_DIR}/history/news_history.json"
+INTEL_SCORING="${INTEL_DIR}/config/scoring.json"
+TOPICLESS_FILTER_JQ="${SCRIPT_DIR}/topicless-filter.jq"
+BRIEF_MANIFEST="${INTEL_DIR}/history/last_brief_manifest.json"
 
 FORCE=false
 DRY_RUN="${DRY_RUN:-false}"
@@ -561,6 +564,67 @@ if [[ -n "$ignored_phrases_json" && "$ignored_phrases_json" != "[]" ]]; then
   )"
 fi
 
+# Load topic weights + source tiers (needed before JSON export, topicless filter, PDB)
+topic_weights_inline="{}"
+if [[ -f "$INTEL_TOPICS" ]] && [[ -n "$topic_weights_key" ]]; then
+  topic_weights_inline="$(
+    jq -c --arg k "$topic_weights_key" \
+      '(.[$k] // {}) | with_entries(.value |= (. * 10 | floor))' "$INTEL_TOPICS" 2>/dev/null || echo "{}"
+  )"
+fi
+tier_mainstream_inline="[]"
+tier_alternative_inline="[]"
+tier_fringe_inline="[]"
+if [[ -f "$INTEL_TOPICS" ]]; then
+  tier_mainstream_inline="$(jq -c '[(.source_tier_classification.mainstream // [])[] | ascii_downcase]' "$INTEL_TOPICS" 2>/dev/null || echo "[]")"
+  tier_alternative_inline="$(jq -c '[(.source_tier_classification.alternative // [])[] | ascii_downcase]' "$INTEL_TOPICS" 2>/dev/null || echo "[]")"
+  tier_fringe_inline="$(jq -c '[(.source_tier_classification.fringe // [])[] | ascii_downcase]' "$INTEL_TOPICS" 2>/dev/null || echo "[]")"
+fi
+
+max_items=7
+topicless_min="${OSINT_TOPICLESS_MIN_SCORE:-8}"
+if [[ -f "$INTEL_SCORING" ]] && command -v jq >/dev/null 2>&1; then
+  _mi="$(jq -r --arg t "$TEMPLATE" '.templates[$t].maxItems // empty' "$INTEL_SCORING" 2>/dev/null || true)"
+  if [[ -n "${_mi:-}" && "$_mi" != "null" ]]; then
+    max_items="$_mi"
+  fi
+  _tm="$(
+    jq -r '.tuning.news.topiclessMinScore // .tuning.topiclessMinScore // empty' "$INTEL_SCORING" 2>/dev/null || true
+  )"
+  if [[ -n "${_tm:-}" && "$_tm" != "null" ]]; then
+    topicless_min="$_tm"
+  fi
+fi
+
+# "What changed since yesterday": drop rows matching last brief headline hashes
+if [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]] && [[ -f "$BRIEF_MANIFEST" ]] && command -v python3 >/dev/null 2>&1; then
+  filtered="$(
+    printf '%s' "$brief_json" | python3 "$DEDUP_PY" --brief-filter-manifest "$BRIEF_MANIFEST" 2>/dev/null || true
+  )"
+  if [[ -n "${filtered:-}" ]] && printf '%s' "$filtered" | jq -e . >/dev/null 2>&1; then
+    brief_json="$filtered"
+  fi
+fi
+
+# Non-topic rows must clear composite score floor (see scoring.example.json tuning.news)
+if [[ -n "$topic_weights_key" && -f "$INTEL_TOPICS" && -f "$TOPICLESS_FILTER_JQ" ]] && command -v jq >/dev/null 2>&1; then
+  topic_weights_raw_json="$(
+    jq -c --arg k "$topic_weights_key" '.[$k] // {}' "$INTEL_TOPICS" 2>/dev/null || echo '{}'
+  )"
+  brief_json="$(
+    echo "$brief_json" | jq -c -f "$TOPICLESS_FILTER_JQ" \
+      --argjson w "$topic_weights_raw_json" \
+      --argjson mainstream "$tier_mainstream_inline" \
+      --argjson alternative "$tier_alternative_inline" \
+      --argjson fringe "$tier_fringe_inline" \
+      --argjson topicless "$topicless_min" \
+      2>/dev/null || echo "$brief_json"
+  )"
+  brief_json="$(
+    echo "$brief_json" | jq -c '.meta = ((.meta // {}) * {rss_items: (.rss | length), twitter_items: (.twitter | length)})' 2>/dev/null || echo "$brief_json"
+  )"
+fi
+
 # Raw JSON for agent-synthesized briefs (no jq report, Slack, or ntfy)
 if [[ -n "$JSON_OUT" ]]; then
   out_dir="$(dirname "$JSON_OUT")"
@@ -605,25 +669,6 @@ top_errors="$(
     | if length == 0 then "- none" else .[] end
   ' 2>/dev/null
 )"
-
-# Load topic weights JSON for inline scoring (empty object if desk skips weighting)
-topic_weights_inline="{}"
-if [[ -f "$INTEL_TOPICS" ]] && [[ -n "$topic_weights_key" ]]; then
-  topic_weights_inline="$(
-    jq -c --arg k "$topic_weights_key" \
-      '(.[$k] // {}) | with_entries(.value |= (. * 10 | floor))' "$INTEL_TOPICS" 2>/dev/null || echo "{}"
-  )"
-fi
-
-# Load tier maps for inline labeling
-tier_mainstream_inline="[]"
-tier_alternative_inline="[]"
-tier_fringe_inline="[]"
-if [[ -f "$INTEL_TOPICS" ]]; then
-  tier_mainstream_inline="$(jq -c '[(.source_tier_classification.mainstream // [])[] | ascii_downcase]' "$INTEL_TOPICS" 2>/dev/null || echo "[]")"
-  tier_alternative_inline="$(jq -c '[(.source_tier_classification.alternative // [])[] | ascii_downcase]' "$INTEL_TOPICS" 2>/dev/null || echo "[]")"
-  tier_fringe_inline="$(jq -c '[(.source_tier_classification.fringe // [])[] | ascii_downcase]' "$INTEL_TOPICS" 2>/dev/null || echo "[]")"
-fi
 
 # --- KEY INDICATORS + aggregated Data: line ---
 KEY_INDICATORS_JQ="${SCRIPT_DIR}/key-indicators.jq"
@@ -1068,14 +1113,17 @@ elif [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]]; then
       ' "$INTEL_TOPICS" 2>/dev/null || true
     )"
   fi
+  _cap_items="$(printf '%d' "${max_items:-7}" 2>/dev/null || echo 7)"
   topic_bundle="$(
     echo "$brief_json" | jq -c -f "${SCRIPT_DIR}/intel-pdb-topics.jq" \
       --argjson weights "${topic_weights_inline:-{}}" \
       --argjson promoted_sections "${pdb_promoted_sections_json:-[]}" \
-      --arg desk "$DESK" 2>/dev/null || echo '{"topic_sections":"","georgia_section":""}'
+      --argjson max_total "${_cap_items}" \
+      --arg desk "$DESK" 2>/dev/null || echo '{"topic_sections":"","georgia_section":"","also_noted":"","manifest_titles":[]}'
   )"
   topic_sections_text="$(echo "$topic_bundle" | jq -r '.topic_sections // ""' 2>/dev/null || true)"
   georgia_section_text="$(echo "$topic_bundle" | jq -r '.georgia_section // ""' 2>/dev/null || true)"
+  also_noted_text="$(echo "$topic_bundle" | jq -r '.also_noted // ""' 2>/dev/null || true)"
 
   body="${title}
 "
@@ -1090,6 +1138,25 @@ ${pdb_key_block}
   if [[ -n "${topic_sections_text//[$'\t\r\n ']}" ]]; then
     body+="
 ${topic_sections_text}
+"
+  fi
+  if [[ "$DESK" == "intel" ]]; then
+    body+="
+**Markets**
+[Agent: one compact line from JSON (yfinance / treasury / gold-api / EIA if present). Example: S&P 5,XXX (+X.X%) | 10Y X.XX% | Gold \$X,XXX | Oil \$XX — use → links where helpful]
+"
+  fi
+  if [[ -n "${also_noted_text//[$'\t\r\n ']}" ]]; then
+    body+="
+**Also noted**
+${also_noted_text}
+"
+  fi
+  _mf_hits="$(echo "$brief_json" | jq -r '.meta.brief_manifest_hits // 0' 2>/dev/null || echo 0)"
+  if [[ "$DESK" == "intel" && "${_mf_hits:-0}" =~ ^[0-9]+$ ]] && (( _mf_hits > 0 )); then
+    body+="
+**Ongoing**
+[Agent: for priority topics with no new headline since the last brief, one line each: → Topic: no new developments]
 "
   fi
   if [[ "$DESK" == "intel" && -n "${georgia_section_text//[$'\t\r\n ']}" ]]; then
@@ -1188,6 +1255,11 @@ fi
 
 post_slack_message "$CHANNEL_ID" "$body"
 post_ntfy_message "OSINT Briefing" "$body"
+
+if [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]] && [[ -n "${topic_bundle:-}" ]] && command -v python3 >/dev/null 2>&1; then
+  echo "$topic_bundle" | jq -c '{titles:(.manifest_titles // [])}' 2>/dev/null \
+    | python3 "$DEDUP_PY" --brief-save-manifest "$BRIEF_MANIFEST" >/dev/null 2>&1 || true
+fi
 
 # --- Global dedup: register all posted items in news_history.json ---
 if [[ -x "$DEDUP_PY" ]] && [[ "$DRY_RUN" != "true" ]] && [[ "$DESK" != "live-feed" ]]; then

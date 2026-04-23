@@ -34,13 +34,13 @@ def main() -> int:
     parser.add_argument("--timezone", default="America/New_York")
     parser.add_argument(
         "--intel-cron",
-        default=os.getenv("OSINT_BRIEFING_CRON_INTEL", "0 7,18 * * *"),
-        help="Cron expr for intel desk (default: 07:00 and 18:00 ET daily)",
+        default=os.getenv("OSINT_BRIEFING_CRON_INTEL", "30 6 * * *"),
+        help="Cron expr for intel desk (default: 06:30 ET daily)",
     )
     parser.add_argument(
-        "--investing-cron",
-        default=os.getenv("OSINT_BRIEFING_CRON_INVESTING", "0 7 * * 1-5"),
-        help="Cron expr for investing desk (default: 07:00 ET weekdays)",
+        "--intel-weekly-cron",
+        default=os.getenv("OSINT_BRIEFING_CRON_INTEL_WEEKLY", "0 8 * * 0"),
+        help="Cron expr for weekly intel digest (default: Sunday 08:00 ET)",
     )
     parser.add_argument(
         "--work-cron",
@@ -57,6 +57,11 @@ def main() -> int:
         default=os.getenv("OSINT_BRIEFING_CRON_LIVE_FEED", "*/30 * * * *"),
         help="Cron expr for live-feed desk (default: every 30 minutes)",
     )
+    parser.add_argument(
+        "--include-live-feed",
+        action="store_true",
+        help="Register osint-live-feed (normally left unscheduled)",
+    )
     args = parser.parse_args()
 
     workspace = _workspace_path()
@@ -64,23 +69,24 @@ def main() -> int:
     skill = _skill_dir().rstrip("/")
 
     intel_msg = (
-        "Run the OSINT intel desk brief. "
+        "Run the OSINT intel desk morning brief (geopolitics + merged market APIs). "
         f"Execute: cd {skill} && bash deliver.sh --desk intel --force "
         "--json /tmp/osint_brief_intel.json. "
         "Then read the JSON file at /tmp/osint_brief_intel.json and synthesize an "
         "analyst-style intelligence brief. Post the brief to Slack #intel-signals "
-        "(C0AGWCQ1ZDE). Use the brief format from the OSINT skill docs — lead with "
-        "priority topics, provide context, include links, be concise. "
+        "(C0AGWCQ1ZDE). Use the OSINT skill PDB format — lead with priority topics, "
+        "narrative prose (not raw bullet dumps), include **Markets** as one tight line "
+        "from yfinance/FRED/treasury/gold data when present, honor **Also noted** and "
+        "**Ongoing** sections if populated. "
         "Do NOT just list raw data points."
     )
-    investing_msg = (
-        "Run the OSINT investing desk brief. "
-        f"Execute: cd {skill} && bash deliver.sh --desk investing --force "
-        "--json /tmp/osint_brief_investing.json. "
-        "Then read the JSON file at /tmp/osint_brief_investing.json and synthesize a "
-        "market-focused brief. Post the brief to Slack #investing (C0AG5NSKVCL). "
-        "Use the brief format from the OSINT skill docs — focus on market moves, "
-        "rates, and economic data. Highlight any precious metals moves >= 5%."
+    intel_weekly_msg = (
+        "Run the OSINT intel weekly deep-dive. "
+        f"Execute: cd {skill} && bash deliver.sh --desk intel --template weeklyDigest --force "
+        "--json /tmp/osint_brief_intel_weekly.json. "
+        "Read that JSON and produce a fuller synthesis (weeklyDigest template in scoring.json): "
+        "cross-source patterns, nine-section OSINT coverage where data exists, and a stronger "
+        "Analyst Note. Post to Slack #intel-signals (C0AGWCQ1ZDE)."
     )
     weather_msg = (
         "Run the OSINT weather desk brief. "
@@ -128,11 +134,12 @@ def main() -> int:
 
     planned = [
         ("osint-intel", args.intel_cron, intel_msg),
-        ("osint-investing", args.investing_cron, investing_msg),
+        ("osint-intel-weekly", args.intel_weekly_cron, intel_weekly_msg),
         ("osint-work", args.work_cron, work_msg),
         ("osint-weather", args.weather_cron, weather_msg),
-        ("osint-live-feed", args.live_feed_cron, live_feed_msg),
     ]
+    if args.include_live_feed:
+        planned.append(("osint-live-feed", args.live_feed_cron, live_feed_msg))
 
     print(f"Workspace: {workspace}")
     print(f"Cron store: {store_path}")

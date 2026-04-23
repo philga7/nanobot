@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -11,6 +12,54 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_HISTORY = Path.home() / ".wrenvps" / "intel" / "history" / "news_history.json"
+
+
+def _title_hash(title: str) -> str:
+    t = (title or "").strip().lower()
+    return hashlib.sha1(t.encode("utf-8")).hexdigest()
+
+
+def _brief_filter_by_manifest(brief: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+    seen: set[str] = set()
+    if manifest_path.exists():
+        try:
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for h in raw.get("hashes") or []:
+                    if isinstance(h, str) and h:
+                        seen.add(h)
+        except Exception:
+            pass
+
+    def keep_rss(row: dict[str, Any]) -> bool:
+        title = str(row.get("title") or row.get("headline") or row.get("text") or "")
+        return _title_hash(title) not in seen
+
+    def keep_tw(row: dict[str, Any]) -> bool:
+        title = str(row.get("text") or row.get("content") or row.get("full_text") or "")
+        return _title_hash(title) not in seen
+
+    out = dict(brief)
+    out["rss"] = [r for r in (brief.get("rss") or []) if isinstance(r, dict) and keep_rss(r)]
+    out["twitter"] = [t for t in (brief.get("twitter") or []) if isinstance(t, dict) and keep_tw(t)]
+    prev_meta = brief.get("meta")
+    meta = dict(prev_meta) if isinstance(prev_meta, dict) else {}
+    meta["brief_manifest_hits"] = (len(brief.get("rss") or []) - len(out["rss"])) + (
+        len(brief.get("twitter") or []) - len(out["twitter"])
+    )
+    out["meta"] = meta
+    return out
+
+
+def _brief_save_manifest(manifest_path: Path, titles: list[str]) -> None:
+    hashes = sorted({_title_hash(t) for t in titles if str(t).strip()})
+    _ensure_parent(manifest_path)
+    payload = {
+        "hashes": hashes,
+        "saved_at": _iso_z(_utc_now()),
+        "count": len(hashes),
+    }
+    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _utc_now() -> datetime:
@@ -178,11 +227,32 @@ def main() -> int:
     parser.add_argument("--prune", type=int, help="Prune items older than N days")
     parser.add_argument("--export", dest="desk_export", help="Export entries seen by desk id")
     parser.add_argument("--since", help="Export entries with firstSeen >= timestamp")
+    parser.add_argument(
+        "--brief-filter-manifest",
+        metavar="PATH",
+        help="Read brief JSON from stdin; drop rss/twitter rows whose title hash was in manifest",
+    )
+    parser.add_argument(
+        "--brief-save-manifest",
+        metavar="PATH",
+        help="Read JSON {\"titles\":[...]} from stdin; write headline hashes for next-brief dedup",
+    )
     args = parser.parse_args()
 
-    selected = [args.check, args.add, args.prune is not None, args.desk_export, args.since]
+    selected = [
+        args.check,
+        args.add,
+        args.prune is not None,
+        args.desk_export,
+        args.since,
+        args.brief_filter_manifest,
+        args.brief_save_manifest,
+    ]
     if sum(bool(x) for x in selected) != 1:
-        parser.error("choose exactly one operation: --check | --add | --prune | --export | --since")
+        parser.error(
+            "choose exactly one operation: --check | --add | --prune | --export | --since | "
+            "--brief-filter-manifest | --brief-save-manifest"
+        )
 
     history_path = Path(args.history).expanduser()
     history = _load_history(history_path)
@@ -208,6 +278,31 @@ def main() -> int:
 
     if args.since:
         return cmd_since(history, args.since)
+
+    if args.brief_filter_manifest:
+        import sys
+
+        manifest = Path(args.brief_filter_manifest).expanduser()
+        raw_in = json.loads(sys.stdin.read() or "{}")
+        if not isinstance(raw_in, dict):
+            raise SystemExit("stdin must be a JSON object (brief)")
+        filtered = _brief_filter_by_manifest(raw_in, manifest)
+        print(json.dumps(filtered, ensure_ascii=False))
+        return 0
+
+    if args.brief_save_manifest:
+        import sys
+
+        manifest = Path(args.brief_save_manifest).expanduser()
+        raw_in = json.loads(sys.stdin.read() or "{}")
+        if not isinstance(raw_in, dict):
+            raise SystemExit("stdin must be a JSON object with \"titles\" array")
+        titles = raw_in.get("titles") or []
+        if not isinstance(titles, list):
+            raise SystemExit("\"titles\" must be an array")
+        _brief_save_manifest(manifest, [str(x) for x in titles])
+        print(manifest)
+        return 0
 
     return 0
 

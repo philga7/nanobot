@@ -1,0 +1,40 @@
+{
+  "templates": {
+    "intelSignal": {
+      "maxItems": 7,
+      "style": "narrative"
+    },
+    "breakingBullet": {
+      "maxItems": 5,
+      "style": "bullet"
+    },
+    "dailyDigest": {
+      "maxItems": 7,
+      "style": "narrative"
+    },
+    "weeklyDigest": {
+      "maxItems": 15,
+      "style": "narrative"
+    }
+  },
+  "profiles": {
+    "breakingNews": {
+      "minToSurface": 8
+    }
+  },
+  "tuning": {
+    "news": {
+      "topiclessMinScore": 8
+    }
+  },
+  "routing": {
+    "breakingNews": {
+      "slack": true,
+      "telegram": false
+    },
+    "intelSignal": {
+      "slack": true,
+      "telegram": true
+    }
+  }
+}
