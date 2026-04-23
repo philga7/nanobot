@@ -628,10 +628,7 @@ fi
 max_items=7
 topicless_min="${OSINT_TOPICLESS_MIN_SCORE:-8}"
 if [[ -f "$INTEL_SCORING" ]] && command -v jq >/dev/null 2>&1; then
-  _mi="$(jq -r --arg t "$TEMPLATE" '.templates[$t].maxItems // empty' "$INTEL_SCORING" 2>/dev/null || true)"
-  if [[ -n "${_mi:-}" && "$_mi" != "null" ]]; then
-    max_items="$_mi"
-  fi
+  max_items="$(jq -r --arg t "$TEMPLATE" '.templates[$t].maxItems // 7' "$INTEL_SCORING" 2>/dev/null || echo 7)"
   _tm="$(
     jq -r '.tuning.news.topiclessMinScore // .tuning.topiclessMinScore // empty' "$INTEL_SCORING" 2>/dev/null || true
   )"
@@ -669,12 +666,18 @@ else
 fi
 
 # "What changed since yesterday": drop rows matching last brief headline hashes
-if [[ "$DESK" == "intel" || "$DESK" == "balikatan" ]] && [[ -f "$BRIEF_MANIFEST" ]] && command -v python3 >/dev/null 2>&1; then
-  filtered="$(
-    printf '%s' "$brief_json" | python3 "$DEDUP_PY" --brief-filter-manifest "$BRIEF_MANIFEST" 2>/dev/null || true
-  )"
-  if [[ -n "${filtered:-}" ]] && printf '%s' "$filtered" | jq -e . >/dev/null 2>&1; then
-    brief_json="$filtered"
+if [[ "$DESK" != "live-feed" ]] && command -v python3 >/dev/null 2>&1; then
+  manifest_path="${INTEL_DIR}/history/last_brief_manifest_${DESK}.json"
+  if [[ ! -f "$manifest_path" ]] && [[ -f "$BRIEF_MANIFEST" ]]; then
+    manifest_path="$BRIEF_MANIFEST"
+  fi
+  if [[ -f "$manifest_path" ]]; then
+    filtered="$(
+      printf '%s' "$brief_json" | python3 "$DEDUP_PY" --brief-filter-manifest "$manifest_path" 2>/dev/null || true
+    )"
+    if [[ -n "${filtered:-}" ]] && printf '%s' "$filtered" | jq -e . >/dev/null 2>&1; then
+      brief_json="$filtered"
+    fi
   fi
 fi
 
