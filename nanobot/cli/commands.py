@@ -699,8 +699,6 @@ def _run_gateway(
         context_window_tokens=provider_snapshot.context_window_tokens,
         cron_service=cron,
         session_manager=session_manager,
-        mcp_servers=config.tools.mcp_servers,
-        channels_config=config.channels,
         instance_name=config.agents.defaults.instance_name,
         search_backend=getattr(config.tools.web.search, "provider", "brave"),
         search_searxng_url=getattr(config.tools.web.search, "base_url", "") or "",
@@ -715,11 +713,6 @@ def _run_gateway(
             else None
         ),
         memory_max_search_results=config.tools.memory.max_search_results,
-        timezone=config.agents.defaults.timezone,
-        unified_session=config.agents.defaults.unified_session,
-        disabled_skills=config.agents.defaults.disabled_skills,
-        session_ttl_minutes=config.agents.defaults.session_ttl_minutes,
-        tools_config=config.tools,
         image_generation_provider_configs={
             "openrouter": config.providers.openrouter,
             "aihubmix": config.providers.aihubmix,
@@ -1180,10 +1173,6 @@ def agent(
                 else None
             ),
             memory_max_search_results=config.tools.memory.max_search_results,
-            timezone=config.agents.defaults.timezone,
-            unified_session=config.agents.defaults.unified_session,
-            disabled_skills=config.agents.defaults.disabled_skills,
-            session_ttl_minutes=config.agents.defaults.session_ttl_minutes,
         )
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
