@@ -1,11 +1,14 @@
 """Cron tool for scheduling reminders and tasks."""
 
+from __future__ import annotations
+
 import re
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
 from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.agent.tools.schema import (
     BooleanSchema,
     IntegerSchema,
@@ -88,7 +91,7 @@ _CRON_PARAMETERS = tool_parameters_schema(
 
 
 @tool_parameters(_CRON_PARAMETERS)
-class CronTool(Tool):
+class CronTool(Tool, ContextAware):
     """Tool to schedule reminders and recurring tasks."""
 
     def __init__(self, cron_service: CronService, default_timezone: str = "UTC"):
@@ -96,12 +99,24 @@ class CronTool(Tool):
         self._default_timezone = default_timezone
         self._channel: ContextVar[str] = ContextVar("cron_channel", default="")
         self._chat_id: ContextVar[str] = ContextVar("cron_chat_id", default="")
+        self._metadata: ContextVar[dict] = ContextVar("cron_metadata", default={})
+        self._session_key: ContextVar[str] = ContextVar("cron_session_key", default="")
         self._in_cron_context: ContextVar[bool] = ContextVar("cron_in_context", default=False)
 
-    def set_context(self, channel: str, chat_id: str) -> None:
+    @classmethod
+    def enabled(cls, ctx: Any) -> bool:
+        return ctx.cron_service is not None
+
+    @classmethod
+    def create(cls, ctx: Any) -> Tool:
+        return cls(cron_service=ctx.cron_service, default_timezone=ctx.timezone)
+
+    def set_context(self, ctx: RequestContext) -> None:
         """Set the current session context for delivery."""
-        self._channel.set(channel)
-        self._chat_id.set(chat_id)
+        self._channel.set(ctx.channel)
+        self._chat_id.set(ctx.chat_id)
+        self._metadata.set(ctx.metadata)
+        self._session_key.set(ctx.session_key or f"{ctx.channel}:{ctx.chat_id}")
 
     def set_cron_context(self, active: bool):
         """Mark whether the tool is executing inside a cron job callback."""
@@ -235,6 +250,8 @@ class CronTool(Tool):
         else:
             return "Error: either every_seconds, cron_expr, or at is required"
 
+        channel_meta = dict(self._metadata.get() or {})
+        session_key = self._session_key.get() or None
         if use_shell:
             job = self._cron.add_job(
                 name=name or message[:30],
@@ -242,6 +259,8 @@ class CronTool(Tool):
                 message=message,
                 delete_after_run=delete_after,
                 payload_kind="shell_exec",
+                channel_meta=channel_meta,
+                session_key=session_key,
             )
         else:
             job = self._cron.add_job(
@@ -252,7 +271,8 @@ class CronTool(Tool):
                 channel=channel,
                 to=chat_id,
                 delete_after_run=delete_after,
-                payload_kind="agent_turn",
+                channel_meta=channel_meta,
+                session_key=session_key,
             )
         return f"Created job '{job.name}' (id: {job.id})"
 

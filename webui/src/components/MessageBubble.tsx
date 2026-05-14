@@ -1,11 +1,11 @@
-import { useState } from "react";
-import { ChevronRight, ImageIcon, Wrench } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, ChevronRight, Copy, FileIcon, ImageIcon, PlaySquare, Sparkles, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { MarkdownText } from "@/components/MarkdownText";
 import { cn } from "@/lib/utils";
-import type { UIImage, UIMessage } from "@/lib/types";
+import type { UIImage, UIMediaAttachment, UIMessage } from "@/lib/types";
 
 interface MessageBubbleProps {
   message: UIMessage;
@@ -21,7 +21,32 @@ interface MessageBubbleProps {
  * collapsible group so intermediate steps never masquerade as replies.
  */
 export function MessageBubble({ message }: MessageBubbleProps) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  const copyResetRef = useRef<number | null>(null);
   const baseAnim = "animate-in fade-in-0 slide-in-from-bottom-1 duration-300";
+
+  useEffect(() => {
+    return () => {
+      if (copyResetRef.current !== null) {
+        window.clearTimeout(copyResetRef.current);
+      }
+    };
+  }, []);
+
+  const onCopyAssistantReply = useCallback(() => {
+    if (!navigator.clipboard) return;
+    void navigator.clipboard.writeText(message.content).then(() => {
+      setCopied(true);
+      if (copyResetRef.current !== null) {
+        window.clearTimeout(copyResetRef.current);
+      }
+      copyResetRef.current = window.setTimeout(() => {
+        setCopied(false);
+        copyResetRef.current = null;
+      }, 1_500);
+    });
+  }, [message.content]);
 
   if (message.kind === "trace") {
     return <TraceGroup message={message} animClass={baseAnim} />;
@@ -29,7 +54,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   if (message.role === "user") {
     const images = message.images ?? [];
+    const media = message.media ?? [];
     const hasImages = images.length > 0;
+    const hasMedia = media.length > 0;
     const hasText = message.content.trim().length > 0;
     return (
       <div
@@ -38,12 +65,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           baseAnim,
         )}
       >
-        {hasImages ? <UserImages images={images} /> : null}
+        {hasImages ? <UserImages images={images} align="right" /> : null}
+        {!hasImages && hasMedia ? (
+          <MessageMedia media={media} align="right" />
+        ) : null}
         {hasText ? (
           <p
             className={cn(
               "ml-auto w-fit rounded-[18px] bg-secondary/70 px-4 py-2",
-              "text-left text-[18px]/[1.8] whitespace-pre-wrap break-words",
+              "text-left text-[16px]/[1.75] whitespace-pre-wrap break-words",
             )}
           >
             {message.content}
@@ -54,16 +84,117 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   }
 
   const empty = message.content.trim().length === 0;
+  const media = message.media ?? [];
+  const reasoning = message.role === "assistant" ? message.reasoning ?? "" : "";
+  const reasoningStreaming = !!(message.role === "assistant" && message.reasoningStreaming);
+  const hasReasoning = reasoning.length > 0 || reasoningStreaming;
+  const showAssistantActions = message.role === "assistant" && !message.isStreaming && !empty;
   return (
-    <div className={cn("w-full text-sm", baseAnim)} style={{ lineHeight: "var(--cjk-line-height)" }}>
-      {empty && message.isStreaming ? (
+    <div className={cn("w-full text-[15px]", baseAnim)} style={{ lineHeight: "var(--cjk-line-height)" }}>
+      {hasReasoning ? (
+        <ReasoningBubble text={reasoning} streaming={reasoningStreaming} hasBodyBelow={!empty} />
+      ) : null}
+      {empty && message.isStreaming && !hasReasoning ? (
         <TypingDots />
-      ) : (
+      ) : empty && message.isStreaming ? null : (
         <>
           <MarkdownText>{message.content}</MarkdownText>
           {message.isStreaming && <StreamCursor />}
+          {media.length > 0 ? <MessageMedia media={media} align="left" /> : null}
+          {showAssistantActions ? (
+            <div className="mt-2 flex items-center gap-1 text-muted-foreground">
+              <button
+                type="button"
+                onClick={onCopyAssistantReply}
+                aria-label={copied ? t("message.copiedReply") : t("message.copyReply")}
+                title={copied ? t("message.copiedReply") : t("message.copyReply")}
+                className={cn(
+                  "inline-flex h-8 w-8 items-center justify-center rounded-full",
+                  "transition-colors hover:bg-muted/55 hover:text-foreground",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                )}
+              >
+                {copied ? (
+                  <Check className="h-4 w-4" aria-hidden />
+                ) : (
+                  <Copy className="h-4 w-4" aria-hidden />
+                )}
+              </button>
+            </div>
+          ) : null}
         </>
       )}
+    </div>
+  );
+}
+
+function MessageMedia({
+  media,
+  align,
+}: {
+  media: UIMediaAttachment[];
+  align: "left" | "right";
+}) {
+  if (media.length === 0) return null;
+  const images = media
+    .filter((item) => item.kind === "image")
+    .map(({ url, name }) => ({ url, name }));
+  const nonImages = media.filter((item) => item.kind !== "image");
+
+  return (
+    <div
+      className={cn(
+        "mt-2 flex flex-wrap gap-2",
+        align === "right" ? "justify-end" : "justify-start",
+      )}
+    >
+      {images.length > 0 ? (
+        <UserImages images={images} align={align} size={align === "left" ? "large" : "compact"} />
+      ) : null}
+      {nonImages.map((item, i) => (
+        <MediaCell key={`${item.url ?? item.name ?? item.kind}-${i}`} media={item} />
+      ))}
+    </div>
+  );
+}
+
+function MediaCell({ media }: { media: UIMediaAttachment }) {
+  const { t } = useTranslation();
+  const hasUrl = typeof media.url === "string" && media.url.length > 0;
+
+  if (media.kind === "video" && hasUrl) {
+    return (
+      <figure className="max-w-[min(100%,32rem)] overflow-hidden rounded-[14px] border border-border/60 bg-muted/40">
+        <video
+          src={media.url}
+          controls
+          preload="metadata"
+          className="block max-h-[26rem] w-full bg-black"
+          aria-label={media.name ? `${t("message.videoAttachment", { defaultValue: "Video attachment" })}: ${media.name}` : t("message.videoAttachment", { defaultValue: "Video attachment" })}
+        />
+        {media.name ? (
+          <figcaption className="truncate px-3 py-1.5 text-[11.5px] text-muted-foreground">
+            {media.name}
+          </figcaption>
+        ) : null}
+      </figure>
+    );
+  }
+
+  const label =
+    media.kind === "video"
+      ? t("message.videoAttachment", { defaultValue: "Video attachment" })
+      : t("message.fileAttachment", { defaultValue: "File attachment" });
+  const Icon = media.kind === "video" ? PlaySquare : FileIcon;
+
+  return (
+    <div
+      className="flex max-w-[18rem] items-center gap-2 rounded-[14px] border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+      title={media.name ?? undefined}
+      aria-label={label}
+    >
+      <Icon className="h-4 w-4 flex-none" aria-hidden />
+      <span className="truncate">{media.name ?? label}</span>
     </div>
   );
 }
@@ -82,7 +213,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
  * have no URL (the backend strips data URLs before persisting), so we
  * render a labelled placeholder tile instead of a broken ``<img>``.
  */
-function UserImages({ images }: { images: UIImage[] }) {
+function UserImages({
+  images,
+  align = "right",
+  size = "compact",
+}: {
+  images: UIImage[];
+  align?: "left" | "right";
+  size?: "compact" | "large";
+}) {
   const { t } = useTranslation();
   // Only real-URL images can open in the lightbox; historical-replay
   // placeholders (no URL) have nothing to zoom into.
@@ -98,11 +237,18 @@ function UserImages({ images }: { images: UIImage[] }) {
 
   return (
     <>
-      <div className="ml-auto flex flex-wrap items-end justify-end gap-2">
+      <div
+        className={cn(
+          "flex flex-wrap items-end gap-2",
+          size === "large" && "gap-3",
+          align === "right" ? "ml-auto justify-end" : "mr-auto justify-start",
+        )}
+      >
         {images.map((img, i) => (
           <UserImageCell
             key={`${img.url ?? "placeholder"}-${i}`}
             image={img}
+            size={size}
             placeholderLabel={t("message.imageAttachment")}
             openLabel={t("lightbox.open")}
             onOpen={
@@ -127,18 +273,23 @@ function UserImages({ images }: { images: UIImage[] }) {
 
 function UserImageCell({
   image,
+  size,
   placeholderLabel,
   openLabel,
   onOpen,
 }: {
   image: UIImage;
+  size: "compact" | "large";
   placeholderLabel: string;
   openLabel: string;
   onOpen?: () => void;
 }) {
   const hasUrl = typeof image.url === "string" && image.url.length > 0;
   const tileClasses = cn(
-    "relative h-24 w-24 overflow-hidden rounded-[14px] border border-border/60 bg-muted/40",
+    "relative overflow-hidden border border-border/60 bg-muted/40",
+    size === "large"
+      ? "w-[min(100%,34rem)] rounded-[20px] bg-transparent"
+      : "h-24 w-24 rounded-[14px]",
     "shadow-[0_6px_18px_-14px_rgba(0,0,0,0.45)]",
   );
 
@@ -148,11 +299,10 @@ function UserImageCell({
         type="button"
         onClick={onOpen}
         aria-label={image.name ? `${openLabel}: ${image.name}` : openLabel}
-        title={image.name ?? undefined}
         className={cn(
           tileClasses,
-          "cursor-zoom-in transition-transform duration-150 motion-reduce:transition-none",
-          "hover:scale-[1.02] hover:ring-2 hover:ring-primary/30",
+          "block cursor-zoom-in p-0 transition-transform duration-150 motion-reduce:transition-none",
+          "hover:scale-[1.01] hover:ring-2 hover:ring-primary/25",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
         )}
       >
@@ -162,7 +312,12 @@ function UserImageCell({
           loading="lazy"
           decoding="async"
           draggable={false}
-          className="h-full w-full object-cover"
+          className={cn(
+            "block",
+            size === "large"
+              ? "h-auto max-h-[36rem] w-full rounded-[inherit] object-contain"
+              : "h-full w-full object-cover",
+          )}
         />
       </button>
     );
@@ -231,14 +386,14 @@ interface TraceGroupProps {
 
 /**
  * Collapsible group of tool-call / progress breadcrumbs. Defaults to
- * expanded for discoverability; a single click on the header folds the
- * group down to a one-line summary so it never dominates the thread.
+ * collapsed because tool traces are supporting evidence, not the answer.
+ * A single click expands the exact calls when the user wants details.
  */
 function TraceGroup({ message, animClass }: TraceGroupProps) {
   const { t } = useTranslation();
   const lines = message.traces ?? [message.content];
   const count = lines.length;
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   return (
     <div className={cn("w-full", animClass)}>
       <button
@@ -280,6 +435,82 @@ function TraceGroup({ message, animClass }: TraceGroupProps) {
             </li>
           ))}
         </ul>
+      )}
+    </div>
+  );
+}
+
+interface ReasoningBubbleProps {
+  text: string;
+  streaming: boolean;
+  hasBodyBelow: boolean;
+}
+
+/**
+ * Subordinate "thinking" trace shown above an assistant turn.
+ *
+ * Lifecycle:
+ *   - While ``streaming`` is true (``reasoning_delta`` frames still arriving),
+ *     the bubble defaults to open and the header runs a shimmer + pulse so
+ *     the user sees the model "thinking out loud" in real time.
+ *   - On ``reasoning_end`` the bubble auto-collapses for prose density —
+ *     the user can re-expand to inspect the chain of thought. The local
+ *     toggle persists once the user interacts.
+ */
+function ReasoningBubble({ text, streaming, hasBodyBelow }: ReasoningBubbleProps) {
+  const { t } = useTranslation();
+  const [userToggled, setUserToggled] = useState(false);
+  const [openLocal, setOpenLocal] = useState(true);
+  const open = userToggled ? openLocal : streaming;
+  const onToggle = () => {
+    setUserToggled(true);
+    setOpenLocal((v) => (userToggled ? !v : !open));
+  };
+  return (
+    <div
+      className={cn(
+        "w-full animate-in fade-in-0 slide-in-from-top-1 duration-200",
+        hasBodyBelow && "mb-2",
+      )}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        className={cn(
+          "group flex w-full items-center gap-2 rounded-md px-2 py-1.5",
+          "text-xs text-muted-foreground transition-colors hover:bg-muted/45",
+          streaming && "reasoning-shimmer",
+        )}
+        aria-expanded={open}
+        aria-live={streaming ? "polite" : undefined}
+      >
+        <Sparkles
+          className={cn("h-3.5 w-3.5", streaming && "animate-pulse")}
+          aria-hidden
+        />
+        <span className="font-medium">
+          {streaming
+            ? t("message.reasoningStreaming", { defaultValue: "Thinking…" })
+            : t("message.reasoning", { defaultValue: "Thinking" })}
+        </span>
+        <ChevronRight
+          aria-hidden
+          className={cn(
+            "ml-auto h-3.5 w-3.5 transition-transform duration-200",
+            open && "rotate-90",
+          )}
+        />
+      </button>
+      {open && text.length > 0 && (
+        <div
+          className={cn(
+            "mt-1 space-y-0.5 whitespace-pre-wrap break-words border-l border-muted-foreground/20 pl-3",
+            "animate-in fade-in-0 slide-in-from-top-1 duration-200",
+            "text-[12.5px] italic leading-relaxed text-muted-foreground/85",
+          )}
+        >
+          {text}
+        </div>
       )}
     </div>
   );

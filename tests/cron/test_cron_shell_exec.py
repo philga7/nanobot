@@ -46,7 +46,8 @@ def test_add_job_shell_exec_strips_delivery_fields(tmp_path) -> None:
     line = json.loads(action_path.read_text(encoding="utf-8").strip().splitlines()[-1])
     assert line["action"] == "add"
     p = line["params"]["payload"]
-    assert {k: v for k, v in p.items() if v is not None} == {
+    filtered = {k: v for k, v in p.items() if v is not None and v != {}}
+    assert filtered == {
         "kind": "shell_exec",
         "message": "bash /tmp/x.sh",
         "deliver": False,
@@ -78,8 +79,12 @@ async def test_cron_tool_agent_job_requires_channel(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_cron_tool_shell_exec_false_keeps_agent_turn(tmp_path) -> None:
+    from nanobot.agent.tools.context import RequestContext
+
     tool = CronTool(CronService(tmp_path / "cron" / "jobs.json"))
-    tool.set_context("telegram", "1461042142")
+    tool.set_context(
+        RequestContext(channel="telegram", chat_id="1461042142", session_key="telegram:1461042142"),
+    )
     result = await tool.execute(
         action="add",
         message="bash /x.sh",
