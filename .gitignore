@@ -104,6 +104,7 @@ logs/
 tmp/
 temp/
 *.tmp
+exp/
 
 # net-audit runtime cache artifacts
 nanobot/skills/net-audit/cache/*.json
