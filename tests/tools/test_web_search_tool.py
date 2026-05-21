@@ -136,6 +136,7 @@ async def test_searxng_search(monkeypatch):
     async def mock_get(self, url, **kw):
         assert "searx.example" in url
         assert kw["headers"]["User-Agent"] == "nanobot-search-test"
+        assert kw["params"] == {"q": "test", "format": "json", "categories": "general"}
         return _response(json={
             "results": [{"title": "Result", "url": "https://example.com", "content": "SearXNG result"}]
         })
@@ -144,6 +145,60 @@ async def test_searxng_search(monkeypatch):
     tool = _tool(provider="searxng", base_url="https://searx.example", user_agent="nanobot-search-test")
     result = await tool.execute(query="test")
     assert "Result" in result
+
+
+@pytest.mark.asyncio
+async def test_searxng_search_news_params(monkeypatch):
+    captured: dict = {}
+
+    async def mock_get(self, url, **kw):
+        captured["params"] = kw["params"]
+        return _response(json={
+            "results": [{"title": "IPO News", "url": "https://news.example", "content": "SpaceX filing"}]
+        })
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    tool = _tool(provider="searxng", base_url="https://searx.example")
+    result = await tool.execute(query="SpaceX IPO 2026", categories="news", time_range="month")
+    assert captured["params"] == {
+        "q": "SpaceX IPO 2026",
+        "format": "json",
+        "categories": "news",
+        "time_range": "month",
+    }
+    assert "IPO News" in result
+
+
+@pytest.mark.asyncio
+async def test_searxng_auto_detects_news_query(monkeypatch):
+    captured: dict = {}
+
+    async def mock_get(self, url, **kw):
+        captured["params"] = kw["params"]
+        return _response(json={
+            "results": [{"title": "Ceasefire update", "url": "https://news.example", "content": "Latest"}]
+        })
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    tool = _tool(provider="searxng", base_url="https://searx.example")
+    await tool.execute(query="Iran ceasefire latest")
+    assert captured["params"]["categories"] == "news"
+    assert captured["params"]["time_range"] == "month"
+
+
+@pytest.mark.asyncio
+async def test_searxng_general_query_not_auto_news(monkeypatch):
+    captured: dict = {}
+
+    async def mock_get(self, url, **kw):
+        captured["params"] = kw["params"]
+        return _response(json={"results": []})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    tool = _tool(provider="searxng", base_url="https://searx.example")
+    await tool.execute(query="Python asyncio tutorial")
+    assert captured["params"] == {"q": "Python asyncio tutorial", "format": "json", "categories": "general"}
+    assert "time_range" not in captured["params"]
 
 
 @pytest.mark.asyncio
