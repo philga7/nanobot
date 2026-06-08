@@ -126,8 +126,10 @@ ANTHROPIC_API_KEY="$(bw get password api/anthropic)" nanobot agent
 > - **VolcEngine / BytePlus Coding Plan**: Use dedicated providers `volcengineCodingPlan` or `byteplusCodingPlan` instead of the pay-per-use `volcengine` / `byteplus` providers.
 > - **Zhipu Coding Plan**: If you're on Zhipu's coding plan, set `"apiBase": "https://open.bigmodel.cn/api/coding/paas/v4"` in your zhipu provider config.
 > - **Alibaba Cloud BaiLian**: If you're using Alibaba Cloud BaiLian's OpenAI-compatible endpoint, set `"apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1"` in your dashscope provider config.
+> - **StepFun Step Plan**: If you're on StepFun's Step Plan subscription, set `"apiBase": "https://api.stepfun.com/step_plan/v1"` in your stepfun provider config. Supported models include `step-3.5-flash`, `step-3.5-flash-2603`, and `step-router-v1`.
 > - **Step Fun (Mainland China)**: If your API key is from Step Fun's mainland China platform (stepfun.com), set `"apiBase": "https://api.stepfun.com/v1"` in your stepfun provider config.
 > - **Xiaomi MiMo thinking mode**: MiMo models (e.g. `mimo-v2.5-pro`) default to enabled thinking. Use `agents.defaults.reasoningEffort: "none"` to disable it, or `"low"` / `"medium"` / `"high"` to keep it on. Omitting the field preserves the provider's per-model default.
+> - **Xiaomi MiMo Token Plan**: If you're on MiMo's token plan, set `"apiBase": "https://token-plan-sgp.xiaomimimo.com/v1"` in your xiaomi_mimo provider config.
 
 | Provider | Purpose | Get API Key |
 |----------|---------|-------------|
@@ -148,6 +150,7 @@ ANTHROPIC_API_KEY="$(bw get password api/anthropic)" nanobot agent
 | `gemini` | LLM (Gemini direct) | [aistudio.google.com](https://aistudio.google.com) |
 | `aihubmix` | LLM (API gateway, access to all models) | [aihubmix.com](https://aihubmix.com) |
 | `siliconflow` | LLM (SiliconFlow/硅基流动) | [siliconflow.cn](https://siliconflow.cn) |
+| `novita` | LLM (Novita AI OpenAI-compatible gateway) | [novita.ai](https://novita.ai) |
 | `dashscope` | LLM (Qwen) | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com) |
 | `moonshot` | LLM (Moonshot/Kimi) | [platform.moonshot.cn](https://platform.moonshot.cn) |
 | `zhipu` | LLM (Zhipu GLM) | [open.bigmodel.cn](https://open.bigmodel.cn) |
@@ -164,6 +167,109 @@ ANTHROPIC_API_KEY="$(bw get password api/anthropic)" nanobot agent
 | `openai_codex` | LLM (Codex, OAuth) | `nanobot provider login openai-codex` |
 | `github_copilot` | LLM (GitHub Copilot, OAuth) | `nanobot provider login github-copilot` |
 | `qianfan` | LLM (Baidu Qianfan) | [cloud.baidu.com](https://cloud.baidu.com/doc/qianfan/s/Hmh4suq26) |
+
+<details>
+<summary><b>OpenAI</b></summary>
+
+By default, OpenAI uses `apiType: "auto"`: nanobot calls Chat Completions normally and routes GPT-5/o-series or explicit `reasoningEffort` requests through the Responses API when useful. You can force a specific API surface:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "apiKey": "${OPENAI_API_KEY}",
+      "apiType": "chat_completions"
+    }
+  }
+}
+```
+
+Valid `apiType` values are exactly `auto`, `chat_completions`, and `responses`.
+
+`extraBody` follows the selected OpenAI API surface. With Chat Completions, nanobot passes it through as the SDK `extra_body` value. With Responses, configure it in Responses API body shape; nanobot merges ordinary top-level fields into the Responses request body, appends `extraBody.tools` after generated function tools, and merges `extraBody.include` without duplicates:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "apiKey": "${OPENAI_API_KEY}",
+      "apiType": "responses",
+      "extraBody": {
+        "tools": [{ "type": "web_search" }],
+        "include": ["web_search_call.action.sources"]
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Azure OpenAI</b></summary>
+
+The `azure_openai` provider talks to your Azure OpenAI resource via the OpenAI **Responses API** (`/openai/v1/responses`). Model names map to **deployment names**, not OpenAI model IDs. Two authentication modes are supported.
+
+**Mode 1: Static API key** (simplest)
+
+```json
+{
+  "providers": {
+    "azure_openai": {
+      "apiKey": "${AZURE_OPENAI_API_KEY}",
+      "apiBase": "https://my-resource.openai.azure.com"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "provider": "azure_openai",
+      "model": "my-gpt-5-deployment"
+    }
+  }
+}
+```
+
+**Mode 2: Microsoft Entra ID (Azure AD) via `DefaultAzureCredential`**
+
+Omit `apiKey` (or leave it empty / unset). The provider falls back to [`DefaultAzureCredential`](https://learn.microsoft.com/azure/developer/python/sdk/authentication/credential-chains#defaultazurecredential-overview) and acquires a bearer token scoped to `https://cognitiveservices.azure.com/.default` for every request. The Azure SDK's own MSAL-backed cache returns valid tokens without a network round-trip.
+
+```json
+{
+  "providers": {
+    "azure_openai": {
+      "apiBase": "https://my-resource.openai.azure.com"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "provider": "azure_openai",
+      "model": "my-gpt-5-deployment"
+    }
+  }
+}
+```
+
+Install the optional dependency:
+
+```bash
+pip install 'nanobot-ai[azure]'
+```
+
+`DefaultAzureCredential` walks this chain in order and uses the first identity that succeeds:
+
+1. **EnvironmentCredential** — reads `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and one of `AZURE_CLIENT_SECRET` / `AZURE_CLIENT_CERTIFICATE_PATH` / `AZURE_USERNAME` + `AZURE_PASSWORD`.
+2. **WorkloadIdentityCredential** — for AKS workload-identity / federated tokens (`AZURE_FEDERATED_TOKEN_FILE`).
+3. **ManagedIdentityCredential** — for Azure VMs, App Service, Functions, Container Apps, etc.
+4. **AzureCliCredential** — uses the token from `az login` on your dev machine.
+5. **AzurePowerShellCredential** — uses the token from `Connect-AzAccount`.
+6. **AzureDeveloperCliCredential** — uses the token from `azd auth login`.
+7. **InteractiveBrowserCredential** *(disabled by default)*.
+
+The identity that ends up signing the request **must be assigned the `Cognitive Services OpenAI User` RBAC role** (or higher) on the Azure OpenAI resource. Without that role you will see `401`/`403` errors at the first request.
+
+> `apiBase` remains mandatory in both modes — it's your Azure resource endpoint and cannot be inferred. If neither `apiKey` is set nor `azure-identity` is installed, the provider raises a clear error pointing you at `pip install 'nanobot-ai[azure]'`.
+
+</details>
 
 <details>
 <summary><b>Skywork / APIFree</b></summary>
@@ -473,6 +579,68 @@ usually only need to set `apiKey`.
 
 Official model names include `LongCat-Flash-Chat`, `LongCat-Flash-Thinking`,
 `LongCat-Flash-Thinking-2601`, and `LongCat-Flash-Lite`.
+
+</details>
+
+<details>
+<summary><b>Xiaomi MiMo</b></summary>
+
+Xiaomi MiMo models are automatically detected by the `xiaomi_mimo` provider when
+the model name contains `mimo`. The default API base is
+`https://api.xiaomimimo.com/v1`.
+
+> **Token Plan**: If you're using MiMo's token plan, override `apiBase` with the
+> dedicated endpoint:
+>
+> ```json
+> {
+>   "providers": {
+>     "xiaomi_mimo": {
+>       "apiKey": "${XIAOMIMIMO_API_KEY}",
+>       "apiBase": "https://token-plan-sgp.xiaomimimo.com/v1"
+>     }
+>   },
+>   "agents": {
+>     "defaults": {
+>       "model": "xiaomi/mimo-v2.5-pro"
+>     }
+>   }
+> }
+> ```
+>
+> No need to set `provider` explicitly — the model name contains `mimo`, which
+> auto-matches to the `xiaomi_mimo` provider spec. Use an API key from the MiMo
+> token plan console and check the MiMo platform for the latest supported model
+> names.
+
+</details>
+
+<details>
+<summary><b>StepFun Step Plan (subscription)</b></summary>
+
+Step Plan is StepFun's subscription-based service for high-frequency AI developers.
+If you're on a Step Plan subscription, override `apiBase` in the existing `stepfun`
+provider config to point to the dedicated Step Plan endpoint.
+
+```json
+{
+  "providers": {
+    "stepfun": {
+      "apiKey": "${STEPFUN_API_KEY}",
+      "apiBase": "https://api.stepfun.com/step_plan/v1"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "provider": "stepfun",
+      "model": "step-3.5-flash"
+    }
+  }
+}
+```
+
+Supported models include `step-3.5-flash`, `step-3.5-flash-2603`, and
+`step-router-v1`.
 
 </details>
 
@@ -941,6 +1109,7 @@ Global settings that apply to all channels. Configure under the `channels` secti
   "channels": {
     "sendProgress": true,
     "sendToolHints": false,
+    "extractDocumentText": true,
     "sendMaxRetries": 3,
     "transcriptionProvider": "groq",
     "transcriptionLanguage": null,
@@ -954,8 +1123,9 @@ Global settings that apply to all channels. Configure under the `channels` secti
 | `sendProgress` | `true` | Stream agent's text progress to the channel |
 | `sendToolHints` | `false` | Stream tool-call hints (e.g. `read_file("…")`) |
 | `showReasoning` | `true` | Allow channels to surface model reasoning/thinking content (DeepSeek-R1 `reasoning_content`, Anthropic `thinking_blocks`, inline `<think>` tags). Reasoning flows as a dedicated stream with `_reasoning_delta` / `_reasoning_end` markers — channels override `send_reasoning_delta` / `send_reasoning_end` to render in-place updates. Even with `true`, channels without those overrides stay no-op silently. Currently surfaced on CLI and WebSocket/WebUI (italic shimmer header, auto-collapses after the stream ends); Telegram / Slack / Discord / Feishu / WeChat / Matrix keep the base no-op until their bubble UI is adapted. Independent of `sendProgress`. |
+| `extractDocumentText` | `true` | Extract supported document/text attachments into the model prompt. Set to `false` to keep document content out of the prompt and include attachment path references instead. |
 | `sendMaxRetries` | `3` | Max delivery attempts per outbound message, including the initial send (0-10 configured, minimum 1 actual attempt) |
-| `transcriptionProvider` | `"groq"` | Voice transcription backend: `"groq"` (free tier, default) or `"openai"`. API key is auto-resolved from the matching provider config. |
+| `transcriptionProvider` | `"groq"` | Voice transcription backend: `"groq"` (free tier, default) or `"openai"`. API key and optional `apiBase` are auto-resolved from the matching provider config. Chat-style bases such as `https://api.groq.com/openai/v1` are normalized to the audio transcription endpoint. |
 | `transcriptionLanguage` | `null` | Optional ISO-639-1 language hint for audio transcription, e.g. `"en"`, `"ko"`, `"ja"`. |
 
 `sendProgress` and `sendToolHints` can also be overridden per channel. The
@@ -1014,7 +1184,7 @@ If you want to disable them, which removes both `web_search` and `web_fetch` fro
 }
 ```
 
-If you need to allow trusted private ranges such as Tailscale / CGNAT addresses, you can explicitly exempt them from SSRF blocking with `tools.ssrfWhitelist`:
+nanobot uses a shared SSRF guard for built-in web fetches and HTTP/SSE MCP connections. By default it blocks loopback, RFC1918/private ranges, CGNAT/Tailscale ranges, link-local addresses, and cloud metadata endpoints. If you need to allow trusted private ranges, explicitly exempt them from SSRF blocking with `tools.ssrfWhitelist`:
 
 ```json
 {
@@ -1023,6 +1193,8 @@ If you need to allow trusted private ranges such as Tailscale / CGNAT addresses,
   }
 }
 ```
+
+Keep whitelist entries as narrow as possible, such as a single host CIDR (`192.168.1.50/32`). The whitelist is global for the shared SSRF guard; it is not limited to one tool or one MCP server.
 
 > [!TIP]
 > Use `proxy` in `tools.web` to route all web requests (search + fetch) through a proxy:
@@ -1051,6 +1223,7 @@ By default, web search uses `duckduckgo`, and it works out of the box without an
 | `jina` | `apiKey` | `JINA_API_KEY` | Free tier (10M tokens) |
 | `kagi` | `apiKey` | `KAGI_API_KEY` | No |
 | `olostep` | `apiKey` | `OLOSTEP_API_KEY` | No |
+| `volcengine` | `apiKey` | `VOLCENGINE_SEARCH_API_KEY` or `WEB_SEARCH_API_KEY` | Monthly quota, then paid |
 | `searxng` | `baseUrl` | `SEARXNG_BASE_URL` | Yes (self-hosted) |
 | `duckduckgo` (default) | — | — | Yes |
 
@@ -1126,6 +1299,25 @@ By default, web search uses `duckduckgo`, and it works out of the box without an
 
 You can also set `OLOSTEP_API_KEY` in the environment instead of storing it in config.
 
+**Volcengine Search:**
+```json
+{
+  "tools": {
+    "web": {
+      "search": {
+        "provider": "volcengine",
+        "apiKey": "${VOLCENGINE_SEARCH_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+You can also set `WEB_SEARCH_API_KEY` for compatibility with the Volcengine web-search skill.
+Create the key in the [Volcengine web search console](https://console.volcengine.com/search-infinity/web-search),
+then copy it from [API keys](https://console.volcengine.com/search-infinity/api-key).
+Volcengine Ark keys are separate and do not work for this search provider.
+
 **SearXNG** (self-hosted, no API key needed):
 ```json
 {
@@ -1157,8 +1349,8 @@ You can also set `OLOSTEP_API_KEY` in the environment instead of storing it in c
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `provider` | string | `"duckduckgo"` | Search backend: `brave`, `tavily`, `jina`, `searxng`, `duckduckgo` |
-| `apiKey` | string | `""` | API key for Brave or Tavily |
+| `provider` | string | `"duckduckgo"` | Search backend: `brave`, `tavily`, `jina`, `kagi`, `olostep`, `volcengine`, `searxng`, `duckduckgo` |
+| `apiKey` | string | `""` | API key for API-backed search providers |
 | `baseUrl` | string | `""` | Base URL for SearXNG |
 | `maxResults` | integer | `5` | Results per search (1–10) |
 
@@ -1194,7 +1386,7 @@ If you want to always use the local conversion, you can force it using:
 
 ## Image Generation
 
-Image generation is configured under `tools.imageGeneration` and uses provider credentials from `providers.openrouter` or `providers.aihubmix`.
+Image generation is configured under `tools.imageGeneration` and uses credentials from the selected provider's `providers.<name>` block.
 
 See [Image Generation](./image-generation.md) for WebUI usage, provider examples, artifact storage, and troubleshooting.
 
@@ -1232,6 +1424,9 @@ Two transport modes are supported:
 |------|--------|---------|
 | **Stdio** | `command` + `args` | Local process via `npx` / `uvx` |
 | **HTTP** | `url` + `headers` (optional) | Remote endpoint (`https://mcp.example.com/sse`) |
+
+> [!IMPORTANT]
+> HTTP/SSE MCP URLs are validated before probing or connecting, and every outgoing MCP HTTP request is validated again before redirects are followed. `localhost`, `127.0.0.1`, RFC1918/private IPs, CGNAT/Tailscale ranges, link-local addresses, and cloud metadata endpoints are blocked by default. This can break previously working local or private HTTP MCP configs until the endpoint is explicitly allowed with `tools.ssrfWhitelist`, preferably with a single-host CIDR such as `127.0.0.1/32`, `::1/128`, or `192.168.1.50/32`. Stdio MCP servers are not affected.
 
 Use `toolTimeout` to override the default 30s per-call timeout for slow servers:
 
@@ -1287,7 +1482,9 @@ For API keys, tokens, and other secrets, see [Environment Variables for Secrets]
 | `tools.restrictToWorkspace` | `false` | When `true`, restricts **all** agent tools (shell, file read/write/edit, list) to the workspace directory. Prevents path traversal and out-of-scope access. |
 | `tools.exec.sandbox` | `""` | Sandbox backend for shell commands. Set to `"bwrap"` to wrap exec calls in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox — the process can only see the workspace (read-write) and media directory (read-only); config files and API keys are hidden. Automatically enables `restrictToWorkspace` for file tools. **Linux only** — requires `bwrap` installed (`apt install bubblewrap`; pre-installed in the Docker image). Not available on macOS or Windows (bwrap depends on Linux kernel namespaces). |
 | `tools.exec.enable` | `true` | When `false`, the shell `exec` tool is not registered at all. Use this to completely disable shell command execution. |
+| `tools.exec.timeout` | `60` | Default hard timeout in seconds for shell commands. Config values may exceed the per-call tool cap; set `0` to disable the hard timeout for trusted long-running commands. |
 | `tools.exec.pathAppend` | `""` | Extra directories to append to `PATH` when running shell commands (e.g. `/usr/sbin` for `ufw`). |
+| `tools.ssrfWhitelist` | `[]` | CIDR ranges exempted from the shared SSRF guard used by web fetches and HTTP/SSE MCP connections. Prefer exact host CIDRs such as `192.168.1.50/32`; broad ranges increase SSRF exposure. |
 | `channels.*.allowFrom` | omitted | Access control per channel. Omit to use pairing-only mode; set `["*"]` to allow everyone; or list specific user IDs. See [Pairing](#pairing) for details. |
 
 **Docker security**: The official Docker image runs as a non-root user (`nanobot`, UID 1000) with bubblewrap pre-installed. When using `docker-compose.yml`, the container drops all Linux capabilities except `SYS_ADMIN` (required for bwrap's namespace isolation).
@@ -1429,7 +1626,7 @@ By default, nanobot uses `UTC` for runtime time context. If you want the agent t
 }
 ```
 
-This affects runtime time strings shown to the model, such as runtime context and heartbeat prompts. It also becomes the default timezone for cron schedules when a cron expression omits `tz`, and for one-shot `at` times when the ISO datetime has no explicit offset.
+This affects runtime time strings shown to the model, such as runtime context. It also becomes the default timezone for cron schedules when a cron expression omits `tz`, and for one-shot `at` times when the ISO datetime has no explicit offset.
 
 Common examples: `UTC`, `America/New_York`, `America/Los_Angeles`, `Europe/London`, `Europe/Berlin`, `Asia/Tokyo`, `Asia/Shanghai`, `Asia/Singapore`, `Australia/Sydney`.
 

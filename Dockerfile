@@ -28,7 +28,7 @@ COPY webui/ webui/
 COPY services/mcp-ts-sdk/ services/mcp-ts-sdk/
 COPY services/library-mcp/ services/library-mcp/
 COPY services/news-pipeline-mcp/ services/news-pipeline-mcp/
-RUN uv pip install --system --no-cache .
+RUN NANOBOT_FORCE_WEBUI_BUILD=1 uv pip install --system --no-cache .
 
 # Build the MCP TypeScript SDK (vendored)
 # We only need the server package for downstream MCP services, so avoid
