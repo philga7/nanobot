@@ -271,8 +271,6 @@ async def test_lid_to_phone_cache_resolves_lid_only_messages():
 async def test_voice_message_transcription_uses_media_path():
     """Voice messages are transcribed when media path is available."""
     ch = WhatsAppChannel({"enabled": True, "allowFrom": ["*"]}, MagicMock())
-    ch.transcription_provider = "openai"
-    ch.transcription_api_key = "sk-test"
     ch._handle_message = AsyncMock()
     ch.transcribe_audio = AsyncMock(return_value="Hello world")
 
@@ -291,6 +289,30 @@ async def test_voice_message_transcription_uses_media_path():
     ch.transcribe_audio.assert_awaited_once_with("/tmp/voice.ogg")
     kwargs = ch._handle_message.await_args.kwargs
     assert kwargs["content"].startswith("Hello world")
+
+
+@pytest.mark.asyncio
+async def test_forwarded_voice_message_preserves_metadata_after_transcription():
+    ch = WhatsAppChannel({"enabled": True, "allowFrom": ["*"]}, MagicMock())
+    ch._handle_message = AsyncMock()
+    ch.transcribe_audio = AsyncMock(return_value="Forwarded audio text")
+
+    await ch._handle_bridge_message(
+        json.dumps({
+            "type": "message",
+            "id": "v-forwarded",
+            "sender": "12345@s.whatsapp.net",
+            "pn": "",
+            "content": "[Voice Message]",
+            "timestamp": 1,
+            "media": ["/tmp/voice.ogg"],
+            "isForwarded": True,
+        })
+    )
+
+    kwargs = ch._handle_message.await_args.kwargs
+    assert kwargs["content"] == "Forwarded audio text"
+    assert kwargs["metadata"]["is_forwarded"] is True
 
 
 @pytest.mark.asyncio

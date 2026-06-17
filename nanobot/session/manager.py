@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,14 @@ _TOOL_CALL_ECHO_RE = re.compile(r'^\s*(?:generate_image|message)\([^)]*\)\s*$')
 _SESSION_PREVIEW_MAX_CHARS = 120
 _SESSION_LIST_PREVIEW_MAX_RECORDS = 200
 _SESSION_LIST_PREVIEW_MAX_CHARS = 1_000_000
+_FORK_VOLATILE_METADATA_KEYS = {
+    "goal_state",
+    "pending_user_turn",
+    "runtime_checkpoint",
+    "thread_goal",
+    "title",
+    "title_user_edited",
+}
 
 
 def _sanitize_assistant_replay_text(content: str) -> str:
@@ -278,8 +287,13 @@ class Session:
         self.updated_at = datetime.now()
         self.metadata.pop("_last_summary", None)
 
-    def retain_recent_legal_suffix(self, max_messages: int) -> tuple[list[dict], int]:
-        """Keep a legal recent suffix constrained by a hard message cap.
+    def retain_recent_legal_suffix(
+        self,
+        max_messages: int,
+        *,
+        extend_to_user: bool = False,
+    ) -> tuple[list[dict], int]:
+        """Keep a legal recent suffix, optionally extending it back to a user turn.
 
         Returns ``(dropped, already_consolidated_count)`` where *dropped* is
         the list of removed messages (in original order) and
@@ -298,30 +312,37 @@ class Session:
         original = list(self.messages)
         before_lc = self.last_consolidated
 
-        retained = list(self.messages[-max_messages:])
+        start_idx = max(0, len(self.messages) - max_messages)
+        if extend_to_user:
+            start_idx = next(
+                (i for i in range(start_idx, -1, -1) if self.messages[i].get("role") == "user"),
+                start_idx,
+            )
 
-        # Prefer starting at a user turn when one exists within the tail.
+        retained = self.messages[start_idx:]
+
+        # Prefer starting at a user turn when one exists within the retained window.
         first_user = next((i for i, m in enumerate(retained) if m.get("role") == "user"), None)
         if first_user is not None:
             retained = retained[first_user:]
-        else:
-            # If the tail is assistant/tool-only, anchor to the latest user in
-            # the full session and take a capped forward window from there.
+        elif not extend_to_user:
+            # If the hard-capped tail is assistant/tool-only, anchor to the
+            # latest user in the full session and take a capped forward window.
             latest_user = next(
                 (i for i in range(len(self.messages) - 1, -1, -1)
                  if self.messages[i].get("role") == "user"),
                 None,
             )
             if latest_user is not None:
-                retained = list(self.messages[latest_user: latest_user + max_messages])
+                retained = self.messages[latest_user: latest_user + max_messages]
 
         # Mirror get_history(): avoid persisting orphan tool results at the front.
         start = find_legal_message_start(retained)
         if start:
             retained = retained[start:]
 
-        # Hard-cap guarantee: never keep more than max_messages.
-        if len(retained) > max_messages:
+        # Hard-cap guarantee unless the caller requested user-turn extension.
+        if not extend_to_user and len(retained) > max_messages:
             retained = retained[-max_messages:]
             start = find_legal_message_start(retained)
             if start:
@@ -628,6 +649,62 @@ class SessionManager:
             logger.warning("Failed to delete session file {}: {}", path, e)
             return False
 
+    def fork_session_before_user_index(
+        self,
+        source_key: str,
+        target_key: str,
+        before_user_index: int,
+    ) -> Session | None:
+        """Create *target_key* from *source_key* before a global user-message index.
+
+        ``before_user_index`` is zero-based over user messages in the full session:
+        ``0`` means "before the first user message", ``1`` means "before the
+        second user message", and so on. A value equal to the total user-message
+        count copies the full session prefix. WebUI assistant-reply forks pass
+        the next user index so the selected completed assistant turn is included.
+        """
+        if before_user_index < 0:
+            return None
+        source = self._cache.get(source_key) or self._load(source_key)
+        if source is None:
+            return None
+
+        copied: list[dict[str, Any]] = []
+        user_index = 0
+        found_target = False
+        for message in source.messages:
+            if message.get("role") == "user":
+                if user_index == before_user_index:
+                    found_target = True
+                    break
+                user_index += 1
+            copied.append(deepcopy(message))
+        if user_index == before_user_index:
+            found_target = True
+        if not found_target:
+            return None
+
+        metadata = deepcopy(source.metadata)
+        for key in _FORK_VOLATILE_METADATA_KEYS:
+            metadata.pop(key, None)
+
+        last_consolidated = min(source.last_consolidated, len(copied))
+        if source.last_consolidated > len(copied):
+            metadata.pop("_last_summary", None)
+            last_consolidated = 0
+
+        now = datetime.now()
+        target = Session(
+            key=target_key,
+            messages=copied,
+            created_at=now,
+            updated_at=now,
+            metadata=metadata,
+            last_consolidated=last_consolidated,
+        )
+        self.save(target, fsync=True)
+        return target
+
     def read_session_file(self, key: str) -> dict[str, Any] | None:
         """Load a session from disk without caching; intended for read-only HTTP endpoints.
 
@@ -671,6 +748,45 @@ class SessionManager:
                 return self._session_payload(repaired)
             return None
 
+    def read_session_metadata(self, key: str) -> dict[str, Any] | None:
+        """Load only the metadata record from a session file.
+
+        This is used by WebUI routes that need session-level metadata but not the
+        full conversation transcript.
+        """
+        path = self._get_session_path(key)
+        if not path.exists():
+            return None
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    if data.get("_type") != "metadata":
+                        return None
+                    metadata = data.get("metadata", {})
+                    return {
+                        "key": data.get("key") or key,
+                        "created_at": data.get("created_at"),
+                        "updated_at": data.get("updated_at"),
+                        "metadata": metadata if isinstance(metadata, dict) else {},
+                    }
+            return None
+        except Exception as e:
+            logger.warning("Failed to read session metadata {}: {}", key, e)
+            repaired = self._repair(key)
+            if repaired is not None:
+                logger.info("Recovered read-only session metadata {} from corrupt file", key)
+                return {
+                    "key": repaired.key,
+                    "created_at": repaired.created_at.isoformat(),
+                    "updated_at": repaired.updated_at.isoformat(),
+                    "metadata": repaired.metadata,
+                }
+            return None
+
     def list_sessions(self) -> list[dict[str, Any]]:
         """
         List all sessions.
@@ -683,7 +799,7 @@ class SessionManager:
         for path in self.sessions_dir.glob("*.jsonl"):
             fallback_key = path.stem.replace("_", ":", 1)
             try:
-                # Read the metadata line and a small preview for WebUI/session lists.
+                # Read the metadata line and a small preview for session lists.
                 with open(path, encoding="utf-8") as f:
                     first_line = f.readline().strip()
                     if first_line:
@@ -718,32 +834,35 @@ class SessionManager:
                                 if not fallback_preview and item.get("role") == "assistant":
                                     fallback_preview = text
                             preview = preview or fallback_preview
-                            sessions.append({
-                                "key": key,
-                                "created_at": data.get("created_at"),
-                                "updated_at": data.get("updated_at"),
-                                "title": title,
-                                "preview": preview,
-                                "path": str(path)
-                            })
+                            sessions.append(
+                                {
+                                    "key": key,
+                                    "created_at": data.get("created_at"),
+                                    "updated_at": data.get("updated_at"),
+                                    "title": title,
+                                    "preview": preview,
+                                    "path": str(path),
+                                }
+                            )
             except Exception:
                 repaired = self._repair(fallback_key)
                 if repaired is not None:
-                    sessions.append({
-                        "key": repaired.key,
-                        "created_at": repaired.created_at.isoformat(),
-                        "updated_at": repaired.updated_at.isoformat(),
-                        "title": _metadata_title(repaired.metadata),
-                        "preview": next(
-                            (
-                                text
-                                for msg in repaired.messages
-                                if (text := _message_preview_text(msg))
+                    sessions.append(
+                        {
+                            "key": repaired.key,
+                            "created_at": repaired.created_at.isoformat(),
+                            "updated_at": repaired.updated_at.isoformat(),
+                            "title": _metadata_title(repaired.metadata),
+                            "preview": next(
+                                (
+                                    text
+                                    for msg in repaired.messages
+                                    if (text := _message_preview_text(msg))
+                                ),
+                                "",
                             ),
-                            "",
-                        ),
-                        "path": str(path)
-                    })
+                            "path": str(path),
+                        }
+                    )
                 continue
-
         return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)

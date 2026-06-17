@@ -8,6 +8,7 @@ import {
   normalizeToolProgressEvents,
   toolTraceLinesFromEvents,
 } from "@/lib/tool-traces";
+import { hasPendingAgentActivity } from "@/lib/activity-timeline";
 import type { StreamError } from "@/lib/nanobot-client";
 import type {
   InboundEvent,
@@ -438,6 +439,7 @@ export function useNanobotStream(
   /** Latest sustained goal for this ``chatId`` (``goal_state`` WS events). */
   goalState: GoalStateWsPayload | undefined;
   send: (content: string, images?: SendImage[], options?: SendOptions) => void;
+  transcribeAudio: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
   stop: () => void;
   setMessages: React.Dispatch<React.SetStateAction<UIMessage[]>>;
   /** Latest transport-level fault raised since the last ``dismissStreamError``.
@@ -449,12 +451,8 @@ export function useNanobotStream(
 } {
   const { client } = useClient();
   const [messages, setMessages] = useState<UIMessage[]>(initialMessages);
-  /** If the last loaded message is a trace row (e.g. "Using 2 tools"),
-   * the model was still processing when the page loaded — keep the
-   * loading spinner alive so the user sees the model is active. */
-  const initialStreaming = initialMessages.length > 0
-    ? initialMessages[initialMessages.length - 1].kind === "trace"
-    : false;
+  /** If history ends in unfinished agent activity, keep the loading spinner alive. */
+  const initialStreaming = hasPendingAgentActivity(initialMessages);
   const [isStreaming, setIsStreaming] = useState(initialStreaming || hasPendingToolCalls);
   /** Unix epoch seconds when the current user turn started; cleared on ``idle``. */
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
@@ -693,9 +691,7 @@ export function useNanobotStream(
   useEffect(() => {
     setMessages(initialMessages);
     setIsStreaming(
-      (initialMessages.length > 0
-        ? initialMessages[initialMessages.length - 1].kind === "trace"
-        : false) || hasPendingToolCalls,
+      hasPendingAgentActivity(initialMessages) || hasPendingToolCalls,
     );
     setStreamError(null);
     setRunStartedAt(chatId ? client.getRunStartedAt(chatId) : null);
@@ -1089,12 +1085,19 @@ export function useNanobotStream(
     client.sendMessage(chatId, "/stop");
   }, [chatId, clearActivitySegment, client, flushPendingStreamEvents]);
 
+  const transcribeAudio = useCallback(
+    (dataUrl: string, options?: { durationMs?: number }) =>
+      client.transcribeAudio(dataUrl, options),
+    [client],
+  );
+
   return {
     messages,
     isStreaming,
     runStartedAt,
     goalState,
     send,
+    transcribeAudio,
     stop,
     setMessages,
     streamError,

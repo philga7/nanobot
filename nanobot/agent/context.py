@@ -18,6 +18,7 @@ from nanobot.utils.helpers import (
     detect_image_mime,
     load_bundled_template,
     truncate_text,
+    truncate_text_to_tokens,
 )
 from nanobot.utils.prompt_templates import render_template
 
@@ -54,7 +55,7 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
     _MAX_RECENT_HISTORY = 50
-    _MAX_HISTORY_CHARS = 32_000  # hard cap on recent history section size
+    _MAX_HISTORY_TOKENS = 8_000  # hard cap on recent history section size (tokens)
     _MAX_RECENT_HISTORY_ENTRY_CHARS = 800
     _MAX_RECENT_HISTORY_TOTAL_CHARS = 6000
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
@@ -79,6 +80,8 @@ class ContextBuilder:
         session_summary: str | None = None,
         workspace: Path | None = None,
         include_memory_recent_history: bool = True,
+        session_key: str | None = None,
+        unified_session: bool = False,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         root = workspace or self.workspace
@@ -105,12 +108,16 @@ class ContextBuilder:
             parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
 
         if include_memory_recent_history:
-            entries = self.memory.read_unprocessed_history(since_cursor=self.memory.get_last_dream_cursor())
+            entries = self.memory.read_recent_history_for_prompt(
+                since_cursor=self.memory.get_last_dream_cursor(),
+                session_key=session_key,
+                unified_session=unified_session,
+            )
             if entries:
                 lines = self._render_recent_history(entries)
                 if lines:
                     history_text = "\n".join(lines)
-                    history_text = truncate_text(history_text, self._MAX_HISTORY_CHARS)
+                    history_text = truncate_text_to_tokens(history_text, self._MAX_HISTORY_TOKENS)
                     parts.append("# Recent History\n\n" + history_text)
 
         if session_summary:
@@ -226,6 +233,8 @@ class ContextBuilder:
         inbound_message: Any | None = None,
         skip_runtime_lines: bool = False,
         include_memory_recent_history: bool = True,
+        session_key: str | None = None,
+        unified_session: bool = False,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         root = workspace or self.workspace
@@ -262,6 +271,8 @@ class ContextBuilder:
                     session_summary=session_summary,
                     workspace=root,
                     include_memory_recent_history=include_memory_recent_history,
+                    session_key=session_key,
+                    unified_session=unified_session,
                 ),
             },
             *history,

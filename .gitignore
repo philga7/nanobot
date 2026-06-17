@@ -7,13 +7,6 @@
 .web
 .orion
 
-# Desktop app generated artifacts
-desktop/build/
-desktop/dist/
-desktop/node_modules/
-desktop/package-lock.json
-desktop/resources/nanobot-engine/
-
 # Claude / AI assistant artifacts
 docs/superpowers/
 docs/plans/
@@ -117,3 +110,4 @@ exp/
 nanobot/skills/net-audit/cache/*.json
 !nanobot/skills/net-audit/cache/cisa-kev.json
 .playwright-mcp/
+bridge/node_modules/

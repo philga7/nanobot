@@ -74,7 +74,7 @@ async def test_cron_tool_shell_style_job_without_channel(tmp_path) -> None:
 async def test_cron_tool_agent_job_requires_channel(tmp_path) -> None:
     tool = CronTool(CronService(tmp_path / "cron" / "jobs.json"))
     result = await tool.execute(action="add", message="Remind me about the meeting", every_seconds=60)
-    assert "no session context" in result
+    assert "chat session" in result
 
 
 @pytest.mark.asyncio
@@ -94,6 +94,9 @@ async def test_cron_tool_shell_exec_false_keeps_agent_turn(tmp_path) -> None:
     assert "Created job" in result
     job = tool._cron.list_jobs()[0]
     assert job.payload.kind == "agent_turn"
-    assert job.payload.deliver is True
-    assert job.payload.channel == "telegram"
-    assert job.payload.to == "1461042142"
+    assert job.payload.session_key == "telegram:1461042142"
+    assert job.payload.origin_channel == "telegram"
+    assert job.payload.origin_chat_id == "1461042142"
+    assert job.payload.deliver is False
+    assert job.payload.channel is None
+    assert job.payload.to is None

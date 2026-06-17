@@ -11,7 +11,12 @@ import { StreamErrorNotice } from "@/components/thread/StreamErrorNotice";
 import { ThreadViewport, type ThreadViewportHandle } from "@/components/thread/ThreadViewport";
 import { useNanobotStream, type SendImage, type SendOptions } from "@/hooks/useNanobotStream";
 import { useSessionHistory } from "@/hooks/useSessions";
-import { fetchCliApps, fetchMcpPresets, fetchSettings, listSlashCommands } from "@/lib/api";
+import {
+  fetchInstalledCliApps,
+  fetchMcpPresets,
+  fetchSettings,
+  listSlashCommands,
+} from "@/lib/api";
 import {
   CLI_APPS_CHANGED_EVENT,
   installedCliAppsFromPayload,
@@ -77,6 +82,7 @@ interface ThreadShellProps {
   onGoHome?: () => void;
   onNewChat?: () => void;
   onCreateChat?: (workspaceScope?: WorkspaceScopePayload | null) => Promise<string | null>;
+  onForkChat?: (sourceChatId: string, beforeUserIndex: number) => Promise<string | null>;
   onTurnEnd?: () => void;
   theme?: "light" | "dark";
   onToggleTheme?: () => void;
@@ -226,6 +232,7 @@ export function ThreadShell({
   title,
   onToggleSidebar,
   onCreateChat,
+  onForkChat,
   onTurnEnd,
   theme = "light",
   onToggleTheme = () => {},
@@ -248,9 +255,14 @@ export function ThreadShell({
   const {
     messages: historical,
     loading,
+    loadingOlder,
+    loadOlder,
+    hasMoreBefore,
+    userMessageOffset,
     hasPendingToolCalls,
     refresh: refreshHistory,
     version: historyVersion,
+    forkBoundaryMessageCount,
   } = useSessionHistory(historyKey);
   const { client, modelName, token } = useClient();
   const [booting, setBooting] = useState(false);
@@ -258,7 +270,7 @@ export function ThreadShell({
   const cliApps = useInstalledSettingItems({
     token,
     eventName: CLI_APPS_CHANGED_EVENT,
-    fetchPayload: fetchCliApps,
+    fetchPayload: fetchInstalledCliApps,
     isPayload: isCliAppsPayload,
     selectItems: installedCliAppsFromPayload,
   });
@@ -302,6 +314,7 @@ export function ThreadShell({
     runStartedAt,
     goalState,
     send,
+    transcribeAudio,
     stop,
     setMessages,
     streamError,
@@ -411,6 +424,14 @@ export function ThreadShell({
       }
       if (cached && cached.length > 0) {
         const normalizedCached = projectWebuiThreadMessages(cached);
+        if (
+          normalizedHistory.length > normalizedCached.length
+          && !isStaleThreadSnapshot(prev, normalizedHistory)
+        ) {
+          messageCacheRef.current.set(chatId, normalizedHistory);
+          appliedHistoryVersionRef.current.set(chatId, historyVersion);
+          return normalizedHistory;
+        }
         if (isStaleThreadSnapshot(prev, normalizedCached)) return keepLiveMessages(prev);
         return normalizedCached;
       }
@@ -614,6 +635,18 @@ export function ThreadShell({
     };
   }, [filePreviewPath]);
 
+  const handleForkFromMessage = useCallback(
+    async (beforeUserIndex: number) => {
+      if (!chatId || !onForkChat) return;
+      const forkedChatId = await onForkChat(chatId, beforeUserIndex);
+      if (!forkedChatId) return;
+      messageCacheRef.current.delete(forkedChatId);
+      appliedHistoryVersionRef.current.delete(forkedChatId);
+      pendingCanonicalHydrateRef.current.add(forkedChatId);
+    },
+    [chatId, onForkChat],
+  );
+
   const composer = (
     <>
       {streamError ? (
@@ -642,6 +675,7 @@ export function ThreadShell({
           cliApps={cliApps}
           mcpPresets={mcpPresets}
           onStop={stop}
+          onTranscribeAudio={transcribeAudio}
           runStartedAt={runStartedAt}
           goalState={goalState}
           workspaceScope={workspaceScope}
@@ -672,6 +706,7 @@ export function ThreadShell({
           cliApps={cliApps}
           mcpPresets={mcpPresets}
           runStartedAt={runStartedAt}
+          onTranscribeAudio={transcribeAudio}
           goalState={goalState}
           workspaceScope={workspaceScope}
           workspaceDefaultScope={workspaceDefaultScope}
@@ -690,7 +725,7 @@ export function ThreadShell({
     </div>
   ) : (
     <div className="flex w-full flex-col items-center text-center animate-in fade-in-0 slide-in-from-bottom-2 duration-500">
-      <h1 className="text-balance text-[40px] font-normal leading-tight tracking-[-0.045em] text-foreground sm:text-[48px]">
+      <h1 className="max-w-[30rem] text-balance text-[34px] font-normal leading-[1.08] tracking-normal text-foreground sm:text-[48px] sm:leading-tight">
         {t(heroGreetingKey)}
       </h1>
     </div>
@@ -733,7 +768,13 @@ export function ThreadShell({
           showScrollToBottomButton={!!session}
           cliApps={cliApps}
           mcpPresets={mcpPresets}
+          forkBoundaryMessageCount={forkBoundaryMessageCount}
+          hasMoreBefore={hasMoreBefore}
+          loadingOlder={loadingOlder}
+          userMessageOffset={userMessageOffset}
+          onLoadOlder={loadOlder}
           onOpenFilePreview={historyKey ? handleOpenFilePreview : undefined}
+          onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
         />
       </div>
       {filePreviewPath && historyKey ? (
