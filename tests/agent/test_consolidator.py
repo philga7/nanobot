@@ -237,6 +237,7 @@ class TestConsolidatorTokenBudget:
         consolidator,
     ):
         """Replay-window consolidation must not cut into the latest user turn."""
+        consolidator._SAFETY_BUFFER = 0
         session = Session(key="test:replay-tool-boundary")
         session.add_message("user", "old")
         session.add_message("assistant", "old answer")
@@ -268,6 +269,7 @@ class TestConsolidatorTokenBudget:
         consolidator,
     ):
         """Do not extend to an older long turn when the hard window has a newer user."""
+        consolidator._SAFETY_BUFFER = 0
         session = Session(key="test:replay-newer-user")
         session.add_message("user", "old")
         session.add_message("assistant", "old answer")
