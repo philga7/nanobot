@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import json_repair
 import os
 import secrets
 import string
