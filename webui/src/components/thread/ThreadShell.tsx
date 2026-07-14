@@ -9,7 +9,7 @@ import { ThreadComposer } from "@/components/thread/ThreadComposer";
 import { ThreadHeader } from "@/components/thread/ThreadHeader";
 import { StreamErrorNotice } from "@/components/thread/StreamErrorNotice";
 import { ThreadViewport, type ThreadViewportHandle } from "@/components/thread/ThreadViewport";
-import { useNanobotStream, type SendImage, type SendOptions } from "@/hooks/useNanobotStream";
+import { useNanobotStream, type SendAttachment, type SendOptions } from "@/hooks/useNanobotStream";
 import { useSessionHistory } from "@/hooks/useSessions";
 import {
   fetchInstalledCliApps,
@@ -212,7 +212,7 @@ function randomHeroGreetingKey(): (typeof HERO_GREETING_KEYS)[number] {
 
 interface PendingFirstMessage {
   content: string;
-  images?: SendImage[];
+  images?: SendAttachment[];
   options?: SendOptions;
 }
 
@@ -238,7 +238,7 @@ function useInstalledSettingItems<Payload, Item>({
       const payload = await fetchPayload(token);
       if (!isCancelled?.()) setItems(selectItems(payload));
     } catch {
-      if (!isCancelled?.()) setItems([]);
+      // Keep the last successful catalog during transient focus/visibility refresh failures.
     }
   }, [fetchPayload, selectItems, token]);
 
@@ -311,7 +311,7 @@ export function ThreadShell({
     version: historyVersion,
     forkBoundaryMessageCount,
   } = useSessionHistory(historyKey);
-  const { client, modelName, token } = useClient();
+  const { client, ingressLimits, modelName, token } = useClient();
   const [booting, setBooting] = useState(false);
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
   const cliApps = useInstalledSettingItems({
@@ -339,6 +339,7 @@ export function ThreadShell({
   const filePreviewWidthRef = useRef(FILE_PREVIEW_DEFAULT_WIDTH);
   const filePreviewCloseTimerRef = useRef<number | null>(null);
   const pendingFirstRef = useRef<PendingFirstMessage | null>(null);
+  const [pendingFirstTargetChatId, setPendingFirstTargetChatId] = useState<string | null>(null);
   const viewportRef = useRef<ThreadViewportHandle | null>(null);
   const messageCacheRef = useRef<Map<string, UIMessage[]>>(new Map());
   /** Last chatId we associated with the in-memory thread (for cache-on-switch). */
@@ -555,15 +556,22 @@ export function ThreadShell({
     messageCacheRef.current.set(chatId, projectWebuiThreadMessages(messages));
   }, [chatId, loading, messages]);
 
+  // The landing composer queues the first message while `new_chat` is in flight.
+  // Only the chat created for that send may consume it; selecting another chat
+  // while creation is pending must not leak the message there.
   useEffect(() => {
-    if (!chatId) return;
+    if (!chatId || pendingFirstTargetChatId !== chatId) return;
     const pending = pendingFirstRef.current;
-    if (!pending) return;
+    if (!pending) {
+      setPendingFirstTargetChatId(null);
+      return;
+    }
     pendingFirstRef.current = null;
+    setPendingFirstTargetChatId(null);
     setScrollToLatestUserPromptSignal((value) => value + 1);
     send(pending.content, pending.images, pending.options);
     setBooting(false);
-  }, [chatId, send]);
+  }, [chatId, pendingFirstTargetChatId, send]);
 
   useEffect(() => {
     let cancelled = false;
@@ -581,21 +589,25 @@ export function ThreadShell({
   }, [token]);
 
   const handleWelcomeSend = useCallback(
-    async (content: string, images?: SendImage[], options?: SendOptions) => {
+    async (content: string, images?: SendAttachment[], options?: SendOptions) => {
       if (booting) return;
       setBooting(true);
       pendingFirstRef.current = { content, images, options: withWorkspaceScope(options) };
+      setPendingFirstTargetChatId(null);
       const newId = await onCreateChat?.(workspaceScope);
       if (!newId) {
         pendingFirstRef.current = null;
+        setPendingFirstTargetChatId(null);
         setBooting(false);
+        return;
       }
+      setPendingFirstTargetChatId(newId);
     },
     [booting, onCreateChat, withWorkspaceScope, workspaceScope],
   );
 
   const handleThreadSend = useCallback(
-    (content: string, images?: SendImage[], options?: SendOptions) => {
+    (content: string, images?: SendAttachment[], options?: SendOptions) => {
       setScrollToLatestUserPromptSignal((value) => value + 1);
       send(content, images, withWorkspaceScope(options));
     },
@@ -742,6 +754,7 @@ export function ThreadShell({
           onWorkspaceScopeChange={onWorkspaceScopeChange}
           pendingQueueKey={chatId}
           transcriptionProvider={settingsSnapshot?.transcription?.provider}
+          ingressLimits={ingressLimits}
         />
       ) : (
         <ThreadComposer
@@ -773,6 +786,7 @@ export function ThreadShell({
           workspaceError={workspaceError}
           onWorkspaceScopeChange={onWorkspaceScopeChange}
           transcriptionProvider={settingsSnapshot?.transcription?.provider}
+          ingressLimits={ingressLimits}
         />
       )}
     </>
@@ -828,6 +842,7 @@ export function ThreadShell({
           showScrollToBottomButton={!!session}
           cliApps={cliApps}
           mcpPresets={mcpPresets}
+          slashCommands={slashCommands}
           forkBoundaryMessageCount={forkBoundaryMessageCount}
           hasMoreBefore={hasMoreBefore}
           loadingOlder={loadingOlder}

@@ -336,7 +336,7 @@ describe("ThreadComposer", () => {
     expect(input.parentElement?.parentElement?.className).toContain("max-w-[49.5rem]");
     expect(input.parentElement?.parentElement?.className).toContain("rounded-[22px]");
     expect(input.parentElement?.parentElement?.className).toContain("shadow-[0_12px_30px_rgba(15,23,42,0.07)]");
-    expect(screen.getByRole("button", { name: "Attach image" }).className).toContain("bg-card");
+    expect(screen.getByRole("button", { name: "Attach files" }).className).toContain("bg-card");
     expect(screen.getByRole("button", { name: "Send message" }).className).toContain("bg-foreground");
     expect(screen.queryByText(/Enter to send/)).not.toBeInTheDocument();
   });
@@ -1248,6 +1248,42 @@ describe("ThreadComposer", () => {
     expect(logo.className).not.toContain("-top-");
   });
 
+  it("uses the shared accent when an installed CLI app has no brand metadata", () => {
+    const mention = "@obsidian-agent-cli";
+    const app: CliAppInfo = {
+      name: "obsidian-agent-cli",
+      display_name: "Obsidian CLI",
+      category: "productivity",
+      description: "Obsidian automation",
+      requires: "",
+      source: "local",
+      entry_point: "obsidian-agent",
+      install_supported: true,
+      installed: true,
+      available: true,
+      status: "installed",
+      logo_url: null,
+      brand_color: null,
+      skill_installed: true,
+    };
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        placeholder="Type your message..."
+        cliApps={[app]}
+      />,
+    );
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.change(input, {
+      target: { value: mention, selectionStart: mention.length },
+    });
+
+    const token = screen.getByTestId("composer-cli-mention-obsidian-agent-cli");
+    expect(token.getAttribute("style")).toContain("var(--inline-token-highlight)");
+    expect(token.getAttribute("style")).not.toContain("var(--primary)");
+  });
+
   it("opens the slash command palette downward when there is more room below", async () => {
     vi.spyOn(HTMLFormElement.prototype, "getBoundingClientRect").mockReturnValue(
       rect({ top: 40, bottom: 160, width: 800, height: 120 }),
@@ -1552,6 +1588,158 @@ describe("ThreadComposer", () => {
 
     expect(onSend).toHaveBeenCalledWith("keep the UI minimal");
     expect(screen.queryByText("keep the UI minimal")).not.toBeInTheDocument();
+  });
+
+  it("guides queued guidance when Enter is pressed again", () => {
+    const onSend = vi.fn();
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        onStop={vi.fn()}
+        isStreaming
+        placeholder="Type your message..."
+      />,
+    );
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.change(input, { target: { value: "send this guidance now" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input).toHaveValue("");
+    expect(screen.getByText("send this guidance now")).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: "Enter", repeat: true });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText("send this guidance now")).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSend).toHaveBeenCalledWith("send this guidance now");
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("send this guidance now")).not.toBeInTheDocument();
+  });
+
+  it("disarms the second Enter shortcut when keyboard voice recording starts", async () => {
+    mockVoiceRecorder();
+    const onSend = vi.fn();
+    const onTranscribeAudio = vi.fn(async () => "voice guidance");
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        onStop={vi.fn()}
+        onTranscribeAudio={onTranscribeAudio}
+        isStreaming
+        placeholder="Type your message..."
+      />,
+    );
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.change(input, { target: { value: "keep this queued" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(window, { code: "KeyD", ctrlKey: true, key: "D", shiftKey: true });
+
+    expect(await screen.findByLabelText("Recording 0:00")).toBeInTheDocument();
+    expect(input).toHaveFocus();
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText("keep this queued")).toBeInTheDocument();
+
+    await waitForVoiceCapture();
+    fireEvent.keyUp(window, { code: "KeyD", ctrlKey: true, key: "D", shiftKey: true });
+    await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalled());
+  });
+
+  it("disarms the second Enter shortcut after stopping the active response", () => {
+    const onSend = vi.fn();
+    const onStop = vi.fn();
+    const { rerender } = render(
+      <ThreadComposer
+        onSend={onSend}
+        onStop={onStop}
+        isStreaming
+        placeholder="Type your message..."
+      />,
+    );
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.change(input, { target: { value: "keep this queued" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Stop response" }));
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText("keep this queued")).toBeInTheDocument();
+
+    rerender(
+      <ThreadComposer
+        onSend={onSend}
+        onStop={onStop}
+        isStreaming={false}
+        placeholder="Type your message..."
+      />,
+    );
+    rerender(
+      <ThreadComposer
+        onSend={onSend}
+        onStop={onStop}
+        isStreaming
+        placeholder="Type your message..."
+      />,
+    );
+    fireEvent.keyDown(screen.getByLabelText("Message input"), { key: "Enter" });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText("keep this queued")).toBeInTheDocument();
+  });
+
+  it("disarms the second Enter shortcut when the composer loses focus", () => {
+    const onSend = vi.fn();
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        onStop={vi.fn()}
+        isStreaming
+        placeholder="Type your message..."
+      />,
+    );
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.change(input, { target: { value: "leave this queued" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.blur(input);
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText("leave this queued")).toBeInTheDocument();
+  });
+
+  it("guides the newly queued prompt when older guidance is still waiting", () => {
+    const onSend = vi.fn();
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        onStop={vi.fn()}
+        isStreaming
+        placeholder="Type your message..."
+      />,
+    );
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.change(input, { target: { value: "older guidance" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(input, { target: { value: "guide this one now" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSend).toHaveBeenCalledWith("guide this one now");
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("older guidance")).toBeInTheDocument();
+    expect(screen.queryByText("guide this one now")).not.toBeInTheDocument();
   });
 
   it("keeps queued guidance attached to the composer and sends it one item at a time", async () => {
@@ -1902,6 +2090,19 @@ describe("ThreadComposer", () => {
       expect(screen.queryByText("remember this edited follow-up")).not.toBeInTheDocument();
     });
 
+    rerender(
+      <ThreadComposer
+        onSend={onSend}
+        onStop={vi.fn()}
+        isStreaming
+        pendingQueueKey="chat-a"
+        placeholder="Type your message..."
+      />,
+    );
+    expect(await screen.findByText("remember this edited follow-up")).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByLabelText("Message input"), { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+
     unmount();
     const remount = render(
       <ThreadComposer
@@ -1914,6 +2115,8 @@ describe("ThreadComposer", () => {
     );
 
     expect(await screen.findByText("remember this edited follow-up")).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByLabelText("Message input"), { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Guide" }));
     expect(onSend).toHaveBeenCalledWith("remember this edited follow-up");
 
