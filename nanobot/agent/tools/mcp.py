@@ -30,6 +30,7 @@ from nanobot.security.network import (
     resolve_url_target,
     validate_url_target,
 )
+from nanobot.utils.cancellation import task_is_cancelling
 
 # Transient connection errors that warrant a single retry.
 # These typically happen when an MCP server restarts or a network
@@ -495,8 +496,7 @@ class MCPToolWrapper(_MCPWrapperBase):
             except asyncio.CancelledError:
                 # MCP SDK's anyio cancel scopes can leak CancelledError on timeout/failure.
                 # Re-raise only if our task was externally cancelled (e.g. /stop).
-                task = asyncio.current_task()
-                if task is not None and task.cancelling() > 0:
+                if task_is_cancelling():
                     raise
                 logger.warning("MCP tool '{}' was cancelled by server/SDK", self._name)
                 return ToolResult.error("(MCP tool call was cancelled)")
@@ -666,8 +666,7 @@ class MCPResourceWrapper(_MCPWrapperBase):
                 )
                 return f"(MCP resource read timed out after {self._resource_timeout}s)"
             except asyncio.CancelledError:
-                task = asyncio.current_task()
-                if task is not None and task.cancelling() > 0:
+                if task_is_cancelling():
                     raise
                 logger.warning("MCP resource '{}' was cancelled by server/SDK", self._name)
                 return "(MCP resource read was cancelled)"
@@ -780,8 +779,7 @@ class MCPPromptWrapper(_MCPWrapperBase):
                 )
                 return f"(MCP prompt call timed out after {self._prompt_timeout}s)"
             except asyncio.CancelledError:
-                task = asyncio.current_task()
-                if task is not None and task.cancelling() > 0:
+                if task_is_cancelling():
                     raise
                 logger.warning("MCP prompt '{}' was cancelled by server/SDK", self._name)
                 return "(MCP prompt call was cancelled)"
@@ -1167,6 +1165,8 @@ async def connect_missing_servers(state: Any, registry: ToolRegistry) -> None:
             else:
                 logger.warning("No MCP servers connected successfully (will retry next message)")
         except asyncio.CancelledError:
+            if task_is_cancelling():
+                raise
             logger.warning("MCP connection cancelled (will retry next message)")
         except BaseException as e:
             logger.warning("Failed to connect MCP servers (will retry next message): {}", e)
@@ -1433,7 +1433,7 @@ async def _close_server(state: Any, server_name: str) -> None:
     try:
         await stack.aclose()
     except asyncio.CancelledError:
-        if asyncio.current_task().cancelling() > 0:
+        if task_is_cancelling():
             raise
         logger.debug("MCP server '{}' cleanup error (can be ignored)", server_name)
     except (RuntimeError, BaseExceptionGroup):
@@ -1450,7 +1450,7 @@ async def close_mcp_servers(state: Any) -> None:
             try:
                 await connection.aclose()
             except asyncio.CancelledError:
-                if asyncio.current_task().cancelling() > 0:
+                if task_is_cancelling():
                     raise
                 logger.debug("MCP server '{}' cleanup error (can be ignored)", name)
             except (RuntimeError, BaseExceptionGroup):

@@ -29,7 +29,11 @@ from nanobot.cron.types import CronJob, CronSchedule
 from nanobot.runtime_context import public_history_messages
 from nanobot.triggers.local_types import LocalTrigger
 from nanobot.utils.subagent_channel_display import scrub_subagent_messages_for_channel
-from nanobot.webui.file_preview import WebUIFilePreviewError, file_preview_payload
+from nanobot.webui.file_preview import (
+    WebUIFilePreviewError,
+    file_preview_availability_payload,
+    file_preview_payload,
+)
 from nanobot.webui.gateway_tokens import GatewayTokenStore, token_response_payload
 from nanobot.webui.http_utils import (
     case_insensitive_header as _case_insensitive_header,
@@ -165,6 +169,7 @@ class GatewayHTTPHandler:
         cron_pending_job_ids: Callable[[str], set[str]] | None = None,
         local_trigger_pending_ids: Callable[[str], set[str]] | None = None,
         channel_feature_action: Callable[..., Any] | None = None,
+        channel_runtime_status: Callable[[], dict[str, Any]] | None = None,
         log: Any = logger,
     ) -> None:
         self.config = config
@@ -199,6 +204,7 @@ class GatewayHTTPHandler:
             runtime_surface=runtime_surface,
             runtime_capabilities=self._capabilities,
             channel_feature_action=channel_feature_action,
+            channel_runtime_status=channel_runtime_status,
         )
 
     def workspace_controls_available(self, connection: Any) -> bool:
@@ -329,7 +335,7 @@ class GatewayHTTPHandler:
                 status=429,
                 content_type="application/json; charset=utf-8",
             )
-        token = self.tokens.issue_token(self.config.token_ttl_s)
+        token = self.tokens.issue_token(self.config.token_ttl_s, audience="webui")
         api_token = (
             self.tokens.issue_api_token(self.config.token_ttl_s)
             if api_token_allowed
@@ -494,13 +500,18 @@ class GatewayHTTPHandler:
             return _http_error(400, "invalid session key")
         if not _is_websocket_channel_session_key(decoded_key):
             return _http_error(404, "session not found")
-        path = _query_first(_parse_query(request.path), "path")
+        query = _parse_query(request.path)
+        path = _query_first(query, "path")
+        is_probe = _query_first(query, "probe") == "1"
         try:
-            payload = file_preview_payload(
-                path,
-                scope=self.workspaces.scope_for_session_key(decoded_key),
-            )
+            scope = self.workspaces.scope_for_session_key(decoded_key)
+            if is_probe:
+                payload = file_preview_availability_payload(path, scope=scope)
+            else:
+                payload = file_preview_payload(path, scope=scope)
         except WebUIFilePreviewError as e:
+            if is_probe and e.status in {400, 403, 404, 415}:
+                return _http_json_response({"available": False})
             return _http_error(e.status, e.message)
         return _http_json_response(payload)
 

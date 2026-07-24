@@ -1,6 +1,6 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./images/readme-cover-dark.png">
-  <img alt="nanobot README cover" src="./images/readme-cover-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="./images/readme-cover-dark.svg">
+  <img alt="nanobot README cover" src="./images/readme-cover-light.svg">
 </picture>
 
 <div align="center">
@@ -58,6 +58,15 @@ For fork-specific areas (OSINT skill, multi-instance configs, compose overlays, 
 | Connect Telegram, Discord, WeChat, Slack, Email, Mattermost, or another chat app | [Chat Apps](./docs/chat-apps.md) |
 | Configure providers, fallback models, Langfuse, MCP, web tools, or security | [Docs](./docs/README.md) and [Configuration](./docs/configuration.md) |
 | Understand or extend the internals | [Architecture](./docs/architecture.md) and [Development](./docs/development.md) |
+| Deploy to the cloud in one click | [Deploy to Render](#deploy-to-render) |
+
+## Deploy to Render
+
+Deploy nanobot's gateway and bundled WebUI as a single web service with persistent memory. Render reads [`render.yaml`](./render.yaml) and prompts for two secrets on deploy: `ANTHROPIC_API_KEY` and `NANOBOT_WEB_TOKEN` (the password that gates the public WebUI — generate a strong random value, e.g. `openssl rand -hex 32`).
+
+> **Note:** The blueprint attaches a persistent disk so sessions, memory, and WebUI history survive restarts. Persistent disks require a paid service (they are not available on Render's free tier).
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/HKUDS/nanobot)
 
 ## What can nanobot do?
 
@@ -298,7 +307,7 @@ Need help with `PATH`, API keys, provider/model matching, or JSON errors? See th
 
 ## 🌐 WebUI
 
-The WebUI ships **inside the published wheel** — no extra build step. It is the browser workbench for chat sessions, workspace controls, Apps, Skills, Automations, and settings. For the full user guide, see [`docs/webui.md`](./docs/webui.md).
+The WebUI ships **inside the published wheel** — no extra build step. It is the browser workbench for topics, workspace controls, Apps, Skills, Automations, and settings. For the full user guide, see [`docs/webui.md`](./docs/webui.md).
 
 <p align="center">
   <img src="images/nanobot_webui.png" alt="nanobot webui preview" width="900">
@@ -384,7 +393,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, review, and contribution gui
 
 ## Contact
 
-This project was started by [Xubin Ren](https://github.com/re-bin) as a personal open-source project and continues to be maintained in an individual capacity using personal resources, with contributions from the open-source community. Feel free to contact [xubinrencs@gmail.com](mailto:xubinrencs@gmail.com) for questions, ideas, or collaboration.
+Nanobot was started by [Xubin Ren](https://github.com/re-bin) as a personal open-source project and is now maintained collaboratively with contributors from the open-source community. Feel free to contact [xubinrencs@gmail.com](mailto:xubinrencs@gmail.com) for questions, ideas, or collaboration.
 
 ### Contributors
 

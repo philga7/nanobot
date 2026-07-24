@@ -365,7 +365,6 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         return resp
 
     # -- non-streaming path --
-
     try:
         async with session_lock:
             try:
@@ -381,7 +380,6 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                     timeout=timeout_s,
                 )
                 response_text = _response_text(response)
-
                 if not response_text or not response_text.strip():
                     logger.warning("Empty response for session {}, retrying", session_key)
                     retry_response = await asyncio.wait_for(
