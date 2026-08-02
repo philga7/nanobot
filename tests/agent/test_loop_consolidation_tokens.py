@@ -222,7 +222,7 @@ async def test_consolidation_forces_boundary_without_future_user_turn(tmp_path, 
 
     call_count = [0]
 
-    def mock_estimate(_session, *, session_summary=None):
+    def mock_estimate(_session, *, runtime):
         call_count[0] += 1
         if call_count[0] == 1:
             return (600, "test")
@@ -231,7 +231,10 @@ async def test_consolidation_forces_boundary_without_future_user_turn(tmp_path, 
     loop.consolidator.estimate_session_prompt_tokens = mock_estimate  # type: ignore[method-assign]
     monkeypatch.setattr(memory_module, "estimate_message_tokens", lambda _m: 300)
 
-    await loop.consolidator.maybe_consolidate_by_tokens(session)
+    await loop.consolidator.maybe_consolidate_by_tokens(
+        session,
+        runtime=loop.llm_runtime(),
+    )
 
     archived_chunk = loop.consolidator.archive.await_args.args[0]
     assert [message["content"] for message in archived_chunk] == ["u1", "a1"]
@@ -246,7 +249,7 @@ async def test_preflight_consolidation_receives_pending_summary(tmp_path) -> Non
         return_value=(session, "Previous conversation summary: earlier context")
     )  # type: ignore[method-assign]
     loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=None)  # type: ignore[method-assign]
-    loop._schedule_background = lambda coro: coro.close()  # type: ignore[method-assign]
+    loop.schedule_background = lambda coro: coro.close()  # type: ignore[method-assign]
 
     runtime = loop.llm_runtime()
     await loop.process_direct("hello", session_key="cli:test", runtime=runtime)
@@ -283,7 +286,7 @@ async def test_preflight_consolidation_before_llm_call(tmp_path, monkeypatch) ->
         return LLMResponse(content="ok", tool_calls=[])
     loop.provider.chat_with_retry = track_llm
     loop.provider.chat_stream_with_retry = track_llm
-    loop._schedule_background = lambda coro: coro.close()  # type: ignore[method-assign]
+    loop.schedule_background = lambda coro: coro.close()  # type: ignore[method-assign]
 
     session = loop.sessions.get_or_create("cli:test")
     session.messages = [

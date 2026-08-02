@@ -470,7 +470,7 @@ async def test_multimodal_remote_image_url_returns_400(aiohttp_client, mock_agen
 
 @pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")
 @pytest.mark.asyncio
-async def test_empty_response_falls_back_without_retry(aiohttp_client) -> None:
+async def test_empty_response_retries_once_then_falls_back(aiohttp_client) -> None:
     from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
     call_count = 0
@@ -496,17 +496,19 @@ async def test_empty_response_falls_back_without_retry(aiohttp_client) -> None:
     assert resp.status == 200
     body = await resp.json()
     assert body["choices"][0]["message"]["content"] == EMPTY_FINAL_RESPONSE_MESSAGE
-    assert call_count == 1
+    assert call_count == 2
 
 
 @pytest.mark.asyncio
 async def test_process_direct_accepts_media() -> None:
     """process_direct should forward media paths to _process_message."""
     from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.runtime_events import RuntimeEventPublisher
 
     loop = AgentLoop.__new__(AgentLoop)
     loop._connect_mcp = AsyncMock()
     loop._session_locks = {}
+    loop.runtime_event_publisher = RuntimeEventPublisher()
 
     captured_msg = None
 

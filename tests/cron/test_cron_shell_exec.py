@@ -79,18 +79,18 @@ async def test_cron_tool_agent_job_requires_channel(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_cron_tool_shell_exec_false_keeps_agent_turn(tmp_path) -> None:
-    from nanobot.agent.tools.context import RequestContext
+    from nanobot.agent.tools.context import RequestContext, request_context
 
     tool = CronTool(CronService(tmp_path / "cron" / "jobs.json"))
-    tool.set_context(
+    with request_context(
         RequestContext(channel="telegram", chat_id="1461042142", session_key="telegram:1461042142"),
-    )
-    result = await tool.execute(
-        action="add",
-        message="bash /x.sh",
-        every_seconds=60,
-        shell_exec=False,
-    )
+    ):
+        result = await tool.execute(
+            action="add",
+            message="bash /x.sh",
+            every_seconds=60,
+            shell_exec=False,
+        )
     assert "Created job" in result
     job = tool._cron.list_jobs()[0]
     assert job.payload.kind == "agent_turn"

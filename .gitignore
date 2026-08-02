@@ -111,3 +111,4 @@ nanobot/skills/net-audit/cache/*.json
 !nanobot/skills/net-audit/cache/cisa-kev.json
 .playwright-mcp/
 bridge/node_modules/
+webui/.verify-*
