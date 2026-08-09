@@ -76,6 +76,7 @@ function fakeClient() {
         return () => set!.delete(h);
       },
       sendMessage: vi.fn(),
+      finishRunLocally: vi.fn(),
       newChat: vi.fn(),
       forkChat: vi.fn(),
       attach: vi.fn(),
@@ -608,6 +609,51 @@ describe("useNanobotStream", () => {
       { phase: "end", call_id: "call-exec", name: "exec" },
       { phase: "error", call_id: "call-read", name: "read_file", error: "missing" },
     ]);
+  });
+
+  it("replaces a hosted search placeholder when its query arrives", () => {
+    const fake = fakeClient();
+    const { result } = renderHook(() => useNanobotStream("chat-hosted-search", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    act(() => {
+      fake.emit("chat-hosted-search", {
+        event: "message",
+        chat_id: "chat-hosted-search",
+        text: "web_search()",
+        kind: "tool_hint",
+        tool_events: [{
+          phase: "start",
+          call_id: "ws-1",
+          name: "web_search",
+          arguments: {},
+        }],
+      });
+      fake.emit("chat-hosted-search", {
+        event: "message",
+        chat_id: "chat-hosted-search",
+        text: "",
+        kind: "progress",
+        tool_events: [{
+          phase: "end",
+          call_id: "ws-1",
+          name: "web_search",
+          arguments: { query: "nanobot news" },
+          result: { status: "completed" },
+        }],
+      });
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0].traces).toEqual([
+      'web_search({"query":"nanobot news"})',
+    ]);
+    expect(result.current.messages[0].toolEvents).toMatchObject([{
+      phase: "end",
+      call_id: "ws-1",
+      arguments: { query: "nanobot news" },
+    }]);
   });
 
   it("keeps phase updates when a tool event trace line is deduped", () => {
@@ -2202,6 +2248,7 @@ describe("useNanobotStream", () => {
     });
 
     expect(fake.client.sendMessage).toHaveBeenLastCalledWith("chat-stop", "/stop");
+    expect(fake.client.finishRunLocally).toHaveBeenCalledWith("chat-stop");
     expect(result.current.isStreaming).toBe(false);
     expect(result.current.messages).toHaveLength(1);
     expect(result.current.messages[0].content).toBe("long task");

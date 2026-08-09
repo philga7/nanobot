@@ -76,7 +76,7 @@ This path avoids hand-editing `config.json` for normal setup. Use the reference 
 | Agent activity | See thinking, tool calls, file edits with diffs, command output, and generated artifacts in context |
 | Workspace | Pick the project workspace before asking for file or shell work |
 | Access | Choose the access mode for local capabilities allowed by your gateway configuration |
-| Composer | Send text, images, voice input, slash commands, and `@` mentions for Apps or MCP presets |
+| Composer | Send text, images, voice input, slash commands, and `@` mentions for topics, Apps, or MCP presets |
 | Channels | Connect and validate chat platforms, install their optional support, and manage saved channel setup |
 | Apps | Install, test, update, and use local CLI App adapters and MCP presets |
 | Skills | Inspect available built-in and workspace skills before relying on them |
@@ -144,8 +144,12 @@ clients.
 
 The composer supports plain messages, image attachments, voice input when
 transcription is configured, slash commands, and `@` mentions for installed Apps
-or MCP presets. The model badge shows the current model or preset and links back
-to model settings when setup is incomplete.
+or MCP presets. Select another topic from the `@` menu to attach a stable
+reference; plain text that happens to start with `@` does not attach history.
+Restricted chats offer topics from the same project, while Full Access chats can
+reference any WebUI topic. Nanobot reads a referenced topic only when its history
+is relevant and can link it in the response. The model badge shows the current
+model or preset and links back to model settings when setup is incomplete.
 
 For image generation, configure an image provider first and then use the WebUI
 image mode from the composer. See [`image-generation.md`](./image-generation.md)
@@ -284,6 +288,13 @@ The gateway refuses to start with `host` set to `"0.0.0.0"` unless `token` or
 `http://<your-ip>:8765` from the other device and enter the secret in the login
 form.
 
+Plain HTTP is enough for basic WebUI access, but browsers expose microphone
+capture only in secure contexts. Voice input works on same-machine localhost;
+from another device, serve the WebUI over HTTPS with a certificate that device
+trusts. Configure [`sslCertfile` and `sslKeyfile`](./websocket.md#tlsssl) on the
+WebSocket channel and open `https://<your-host>:8765`, or terminate HTTPS at a
+reverse proxy and use that proxy's HTTPS URL.
+
 Remote WebUI clients with a valid token can view and use Apps. Actions that
 install missing nanobot support packages, such as adding a channel dependency,
 are blocked by default. To let trusted remote administrators change the Python
@@ -317,6 +328,10 @@ If the page does not open, check these in order:
 3. `nanobot gateway` is still running.
 4. You are opening port `8765`, not the gateway health port.
 5. LAN access uses `host: "0.0.0.0"` and a token or token issue secret.
+
+If voice input asks for a secure connection, use HTTPS with a certificate the
+device trusts. Browsers do not expose microphone capture to
+`http://<your-ip>` origins.
 
 For detailed diagnostics, see
 [`troubleshooting.md#webui-problems`](./troubleshooting.md#webui-problems).

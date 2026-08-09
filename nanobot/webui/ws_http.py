@@ -26,9 +26,8 @@ from websockets.http11 import Response
 from nanobot.command.builtin import builtin_command_palette
 from nanobot.cron.session_turns import is_bound_cron_job
 from nanobot.cron.types import CronJob, CronSchedule
-from nanobot.runtime_context import public_history_messages
+from nanobot.security.workspace_access import WorkspaceScope
 from nanobot.triggers.local_types import LocalTrigger
-from nanobot.utils.subagent_channel_display import scrub_subagent_messages_for_channel
 from nanobot.webui.file_preview import (
     WebUIFilePreviewError,
     file_preview_availability_payload,
@@ -36,7 +35,13 @@ from nanobot.webui.file_preview import (
 )
 from nanobot.webui.gateway_tokens import GatewayTokenStore, token_response_payload
 from nanobot.webui.http_utils import (
+    accepts_gzip as _accepts_gzip,
+)
+from nanobot.webui.http_utils import (
     case_insensitive_header as _case_insensitive_header,
+)
+from nanobot.webui.http_utils import (
+    combined_list_header as _combined_list_header,
 )
 from nanobot.webui.http_utils import (
     host_for_url as _host_for_url,
@@ -55,6 +60,9 @@ from nanobot.webui.http_utils import (
 )
 from nanobot.webui.http_utils import (
     is_localhost as _is_localhost,
+)
+from nanobot.webui.http_utils import (
+    is_trusted_proxy_authenticated_request as _is_trusted_proxy_authenticated_request,
 )
 from nanobot.webui.http_utils import (
     issue_route_secret_matches as _issue_route_secret_matches,
@@ -82,7 +90,11 @@ from nanobot.webui.session_automations import (
     session_automation_jobs,
     session_automations_payload,
 )
-from nanobot.webui.session_list_index import list_webui_sessions
+from nanobot.webui.session_list_index import (
+    WEBUI_SESSION_INDEX_INTERNAL_FIELDS,
+    indexed_workspace_scope,
+    list_webui_sessions,
+)
 from nanobot.webui.sidebar_state import (
     read_webui_sidebar_state,
     write_webui_sidebar_state,
@@ -108,13 +120,36 @@ from nanobot.webui.workspaces import WebUIWorkspaceController
 _SLOW_WEBUI_HTTP_LOG_MS = 1_000
 _AUTOMATION_VALUES_HEADER = "X-Nanobot-Automation-Values"
 
+# Fix for #5190: On Windows, mimetypes.guess_type() reads the registry key
+# HKEY_CLASSES_ROOT\.js\Content Type, which is commonly set to 'text/plain'
+# because .js is associated with Windows Script Host rather than web JavaScript.
+# That registry value overrides Python's built-in mapping and causes browsers to
+# reject ES module scripts with:
+#   Failed to load module script: Expected a JavaScript-or-Wasm module script
+#   but the server responded with a MIME type of "text/plain".
+# We explicitly register correct MIME types for common web static assets here
+# (module-import time) so all callers of mimetypes.guess_type() in this process
+# benefit, regardless of host registry configuration.
+_MIME_FIXES: dict[str, str] = {
+    ".js":    "application/javascript",
+    ".mjs":   "application/javascript",
+    ".css":   "text/css",
+    ".html":  "text/html",
+    ".json":  "application/json",
+    ".svg":   "image/svg+xml",
+    ".wasm":  "application/wasm",
+}
+
+for _ext, _ctype in _MIME_FIXES.items():
+    mimetypes.add_type(_ctype, _ext, strict=True)
+
+
 if TYPE_CHECKING:
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.websocket.runtime import WebSocketConfig
     from nanobot.cron.service import CronService
     from nanobot.session.manager import SessionManager
     from nanobot.triggers.local_store import LocalTriggerStore
-
 
 def _decode_api_key(raw_key: str) -> str | None:
     key = unquote(raw_key)
@@ -232,6 +267,8 @@ class GatewayHTTPHandler:
     # -- Token management ---------------------------------------------------
 
     def check_api_token(self, request: WsRequest) -> bool:
+        if getattr(request, "_nanobot_trusted_proxy_authenticated", False):
+            return True
         return self.tokens.check_api_token(request)
 
     # -- Main dispatch ------------------------------------------------------
@@ -241,6 +278,11 @@ class GatewayHTTPHandler:
         got, _ = _parse_request_path(request.path)
         started = time.perf_counter()
         response: Any | None = None
+        setattr(
+            request,
+            "_nanobot_trusted_proxy_authenticated",
+            _is_trusted_proxy_authenticated_request(connection, request.headers, self.config),
+        )
 
         try:
             response = await self._dispatch_resolved(connection, request, got)
@@ -295,7 +337,10 @@ class GatewayHTTPHandler:
 
         # Static SPA serving
         if self.static_dist_path is not None:
-            response = self._serve_static(got)
+            response = self._serve_static(
+                got,
+                accept_encoding=_combined_list_header(request.headers, "Accept-Encoding"),
+            )
             if response is not None:
                 return response
 
@@ -341,11 +386,30 @@ class GatewayHTTPHandler:
     def _handle_bootstrap(self, connection: Any, request: Any) -> Response:
         secret = self.config.token_issue_secret.strip() or self.config.token.strip()
         is_local_browser = _is_local_browser_request(connection, request.headers)
-        if secret:
-            if not _issue_route_secret_matches(request.headers, secret):
-                return _http_error(401, "Unauthorized")
-        elif not is_local_browser:
-            return _http_error(403, "bootstrap is localhost-only")
+        is_proxy_authenticated = _is_trusted_proxy_authenticated_request(
+            connection,
+            request.headers,
+            self.config,
+        )
+        if not is_proxy_authenticated:
+            if secret:
+                if not _issue_route_secret_matches(request.headers, secret):
+                    return _http_error(401, "Unauthorized")
+            elif not is_local_browser:
+                return _http_error(403, "bootstrap is localhost-only")
+
+        if is_proxy_authenticated:
+            payload = {
+                "ws_path": _normalize_config_path(self.config.path),
+                "ws_url": self._bootstrap_ws_url(request),
+                "limits": self.ingress.bootstrap_limits(
+                    max_frame_bytes=self.config.max_message_bytes,
+                ),
+                "model_name": _resolve_bootstrap_model_name(self.runtime_model_name),
+                "runtime_surface": self._runtime_surface,
+                "runtime_capabilities": self._capabilities,
+            }
+            return _http_json_response(payload)
 
         api_token_allowed = bool(secret) or is_local_browser
         if not self.tokens.can_issue(include_api_token=api_token_allowed):
@@ -381,6 +445,8 @@ class GatewayHTTPHandler:
 
     def _bootstrap_ws_url(self, request: Any) -> str:
         headers = getattr(request, "headers", {}) or {}
+        if self.config.public_ws_url:
+            return self.config.public_ws_url
         host = _safe_host_header(_case_insensitive_header(headers, "Host"))
         if not host:
             host = _host_for_url(self.config.host, self.config.port)
@@ -394,10 +460,6 @@ class GatewayHTTPHandler:
     # -- Session routes -----------------------------------------------------
 
     async def _dispatch_session_routes(self, request: WsRequest, got: str) -> Response | None:
-        m = re.match(r"^/api/sessions/([^/]+)/messages$", got)
-        if m:
-            return self._handle_session_messages(request, m.group(1))
-
         m = re.match(r"^/api/sessions/([^/]+)/webui-thread$", got)
         if m:
             return self._handle_webui_thread_get(request, m.group(1))
@@ -422,7 +484,10 @@ class GatewayHTTPHandler:
         if self.session_manager is None:
             return _http_error(503, "session manager unavailable")
         payload = await asyncio.to_thread(self._sessions_list_payload)
-        return _http_json_response(payload)
+        return _http_json_response(
+            payload,
+            accept_encoding=_combined_list_header(request.headers, "Accept-Encoding"),
+        )
 
     def _sessions_list_payload(self) -> dict[str, Any]:
         assert self.session_manager is not None
@@ -430,47 +495,31 @@ class GatewayHTTPHandler:
         from nanobot.session.webui_turns import websocket_turn_wall_started_at
 
         cleaned: list[dict[str, Any]] = []
+        default_scope: WorkspaceScope | None = None
         for s in sessions:
             key = s.get("key")
             if not (isinstance(key, str) and key.startswith("websocket:")):
                 continue
-            row = {k: v for k, v in s.items() if k != "path"}
+            row = {
+                k: v
+                for k, v in s.items()
+                if k != "path" and k not in WEBUI_SESSION_INDEX_INTERNAL_FIELDS
+            }
             chat_id = key.split(":", 1)[1]
             started_at = websocket_turn_wall_started_at(chat_id)
             if started_at is not None:
                 row["run_started_at"] = started_at
-            scope = self.workspaces.scope_for_session_key(key)
+            if default_scope is None:
+                default_scope = self.workspaces.default_scope()
+            scope_present, raw_scope = indexed_workspace_scope(s)
+            scope = self.workspaces.scope_for_indexed_metadata(
+                raw_scope,
+                scope_present=scope_present,
+                default_scope=default_scope,
+            )
             row["workspace_scope"] = scope.payload()
             cleaned.append(row)
         return {"sessions": cleaned}
-
-    def _handle_session_messages(self, request: WsRequest, key: str) -> Response:
-        if not self.check_api_token(request):
-            return _http_error(401, "Unauthorized")
-        if self.session_manager is None:
-            return _http_error(503, "session manager unavailable")
-        decoded_key = _decode_api_key(key)
-        if decoded_key is None:
-            return _http_error(400, "invalid session key")
-        if not _is_websocket_channel_session_key(decoded_key):
-            return _http_error(404, "session not found")
-        data = self.session_manager.read_session_file(decoded_key)
-        if data is None:
-            return _http_error(404, "session not found")
-        messages = data.get("messages")
-        if isinstance(messages, list):
-            session_messages = cast(list[dict[str, Any]], messages)
-            scrub_subagent_messages_for_channel(session_messages)
-            raw_session_messages = cast(list[Any], messages)
-            data["messages"] = public_history_messages(
-                [
-                    cast(dict[str, Any], message)
-                    for message in raw_session_messages
-                    if isinstance(message, dict)
-                ]
-            )
-        self.media.augment_media_urls(data)
-        return _http_json_response(data)
 
     def _handle_webui_thread_get(self, request: WsRequest, key: str) -> Response:
         if not self.check_api_token(request):
@@ -481,17 +530,21 @@ class GatewayHTTPHandler:
         if not _is_websocket_channel_session_key(decoded_key):
             return _http_error(404, "session not found")
         scope = self.workspaces.scope_for_session_key(decoded_key)
-        session_messages: list[dict[str, Any]] | None = None
-        if self.session_manager is not None:
+
+        def load_session_messages() -> list[dict[str, Any]] | None:
+            if self.session_manager is None:
+                return None
             session_data = self.session_manager.read_session_file(decoded_key)
             raw_messages = session_data.get("messages") if isinstance(session_data, dict) else None
-            if isinstance(raw_messages, list):
-                raw_session_messages = cast(list[Any], raw_messages)
-                session_messages = [
-                    cast(dict[str, Any], raw_message)
-                    for raw_message in raw_session_messages
-                    if isinstance(raw_message, dict)
-                ]
+            if not isinstance(raw_messages, list):
+                return None
+            raw_session_messages = cast(list[Any], raw_messages)
+            return [
+                cast(dict[str, Any], raw_message)
+                for raw_message in raw_session_messages
+                if isinstance(raw_message, dict)
+            ]
+
         query = _parse_query(request.path)
         raw_limit = _query_first(query, "limit")
         limit: int | None = None
@@ -524,7 +577,7 @@ class GatewayHTTPHandler:
                 text,
                 workspace_path=scope.project_path,
             ),
-            session_messages=session_messages,
+            session_messages_loader=load_session_messages,
             active_turn_started_at=active_turn_started_at,
             active_turn_id=active_turn_id,
             active_turn_transcript_persistence_failed=(
@@ -537,7 +590,10 @@ class GatewayHTTPHandler:
         if data is None:
             return _http_error(404, "webui thread not found")
         data["workspace_scope"] = scope.payload()
-        return _http_json_response(data)
+        return _http_json_response(
+            data,
+            accept_encoding=_combined_list_header(request.headers, "Accept-Encoding"),
+        )
 
     def _handle_file_preview(self, request: WsRequest, key: str) -> Response:
         if not self.check_api_token(request):
@@ -1059,7 +1115,12 @@ class GatewayHTTPHandler:
 
     # -- Static file serving ------------------------------------------------
 
-    def _serve_static(self, request_path: str) -> Response | None:
+    def _serve_static(
+        self,
+        request_path: str,
+        *,
+        accept_encoding: str = "",
+    ) -> Response | None:
         assert self.static_dist_path is not None
         rel = request_path.lstrip("/")
         if not rel:
@@ -1077,15 +1138,28 @@ class GatewayHTTPHandler:
                 candidate = index
             else:
                 return None
-        try:
-            body = candidate.read_bytes()
-        except OSError as e:
-            self._log.warning("static: failed to read {}: {}", candidate, e)
-            return _http_error(500, "Internal Server Error")
         ctype, _ = mimetypes.guess_type(candidate.name)
         if ctype is None:
             ctype = "application/octet-stream"
-        if ctype.startswith("text/") or ctype in {"application/javascript", "application/json"}:
+        utf8_text = ctype.startswith("text/") or ctype in {
+            "application/javascript",
+            "application/json",
+        }
+        compressible = utf8_text or ctype == "image/svg+xml"
+        response_path = candidate
+        extra_headers: list[tuple[str, str]] = []
+        if compressible:
+            extra_headers.append(("Vary", "Accept-Encoding"))
+            gzip_candidate = candidate.with_name(f"{candidate.name}.gz")
+            if _accepts_gzip(accept_encoding) and gzip_candidate.is_file():
+                response_path = gzip_candidate
+                extra_headers.append(("Content-Encoding", "gzip"))
+        try:
+            body = response_path.read_bytes()
+        except OSError as e:
+            self._log.warning("static: failed to read {}: {}", response_path, e)
+            return _http_error(500, "Internal Server Error")
+        if utf8_text:
             ctype = f"{ctype}; charset=utf-8"
         if candidate.name == "index.html":
             cache = "no-cache"
@@ -1095,7 +1169,7 @@ class GatewayHTTPHandler:
             body,
             status=200,
             content_type=ctype,
-            extra_headers=[("Cache-Control", cache)],
+            extra_headers=[("Cache-Control", cache), *extra_headers],
         )
 
 

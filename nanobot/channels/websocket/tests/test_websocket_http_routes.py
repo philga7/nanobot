@@ -19,11 +19,7 @@ from nanobot.channels.websocket.runtime import WebSocketChannel, WebSocketConfig
 from nanobot.cron.service import CronService
 from nanobot.cron.types import CronJob, CronPayload, CronSchedule
 from nanobot.optional_features import InstallResult
-from nanobot.runtime_context import (
-    RUNTIME_CONTEXT_HISTORY_META,
-    RuntimeContextBlock,
-    append_runtime_context,
-)
+from nanobot.security.workspace_access import WORKSPACE_SCOPE_METADATA_KEY
 from nanobot.session.keys import UNIFIED_SESSION_KEY
 from nanobot.session.manager import Session, SessionManager
 from nanobot.triggers.local_store import LocalTriggerStore
@@ -255,7 +251,7 @@ async def test_bootstrap_returns_token_for_localhost(
 
 
 @pytest.mark.asyncio
-async def test_sessions_routes_require_bearer_token(
+async def test_sessions_list_requires_bearer_token(
     bus: MagicMock, tmp_path: Path
 ) -> None:
     sm = _seed_session(tmp_path, key="websocket:abc")
@@ -277,14 +273,26 @@ async def test_sessions_routes_require_bearer_token(
         # Server stays an opaque source: filesystem paths must not leak to the wire.
         assert all("path" not in s for s in listing.json()["sessions"])
 
-        msgs = await _http_get(
-            "http://127.0.0.1:29902/api/sessions/websocket:abc/messages",
-            headers=auth,
+    finally:
+        await channel.stop()
+        await server_task
+
+
+@pytest.mark.asyncio
+async def test_legacy_session_messages_route_is_not_exposed(
+    bus: MagicMock, tmp_path: Path
+) -> None:
+    sm = _seed_session(tmp_path, key="websocket:legacy")
+    channel = _ch(bus, session_manager=sm, port=29919)
+    server_task = asyncio.create_task(channel.start())
+    try:
+        token = channel.gateway.tokens.issue_api_token(300)
+        response = await _http_get(
+            "http://127.0.0.1:29919/api/sessions/websocket:legacy/messages",
+            headers={"Authorization": f"Bearer {token}"},
         )
-        assert msgs.status_code == 200
-        body = msgs.json()
-        assert body["key"] == "websocket:abc"
-        assert [m["role"] for m in body["messages"]] == ["user", "assistant"]
+
+        assert response.status_code == 404
     finally:
         await channel.stop()
         await server_task
@@ -427,6 +435,7 @@ async def test_session_automations_route_lists_local_triggers(
         chat_id="abc",
         session_key="websocket:abc",
     )
+    trigger_store.enqueue(trigger.id, "Review PR #4591")
     channel = _ch(
         bus,
         session_manager=_seed_session(tmp_path, key="websocket:abc"),
@@ -453,6 +462,7 @@ async def test_session_automations_route_lists_local_triggers(
         assert job["kind"] == "local_trigger"
         assert job["schedule"]["kind"] == "local"
         assert job["payload"]["kind"] == "local_trigger"
+        assert job["payload"]["message"] == "Review PR #4591"
         assert job["payload"]["command"] == f'nanobot trigger {trigger.id} "message"'
         assert job["state"]["pending"] is True
     finally:
@@ -2201,7 +2211,7 @@ async def test_mcp_presets_routes_require_token_and_return_payload(
 
 @pytest.mark.asyncio
 async def test_sessions_list_only_returns_websocket_sessions_by_default(
-    bus: MagicMock, tmp_path: Path
+    bus: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Seed a realistic multi-channel disk state: CLI, Slack, Lark and
     # websocket sessions all live in the same ``sessions/`` directory.
@@ -2215,7 +2225,20 @@ async def test_sessions_list_only_returns_websocket_sessions_by_default(
             "websocket:beta",
         ],
     )
-    channel = _ch(bus, session_manager=sm, port=29906)
+    project = tmp_path / "project"
+    project.mkdir()
+    scoped = sm.get_or_create("websocket:beta")
+    scoped.metadata[WORKSPACE_SCOPE_METADATA_KEY] = {
+        "project_path": str(project),
+        "access_mode": "restricted",
+    }
+    sm.save(scoped)
+
+    def fail_metadata_read(_key: str) -> None:
+        raise AssertionError("the session list must use its own index metadata")
+
+    monkeypatch.setattr(sm, "read_session_metadata", fail_metadata_read)
+    channel = _ch(bus, session_manager=sm, workspace_path=tmp_path, port=29906)
     server_task = asyncio.create_task(channel.start())
     try:
         token = channel.gateway.tokens.issue_api_token(300)
@@ -2225,10 +2248,17 @@ async def test_sessions_list_only_returns_websocket_sessions_by_default(
             "http://127.0.0.1:29906/api/sessions", headers=auth
         )
         assert listing.status_code == 200
-        keys = {s["key"] for s in listing.json()["sessions"]}
+        sessions = listing.json()["sessions"]
+        keys = {s["key"] for s in sessions}
         # Only websocket-channel sessions are part of the webui surface; CLI /
         # Slack / Lark rows would be non-resumable from the browser.
         assert keys == {"websocket:alpha", "websocket:beta"}
+        rows = {row["key"]: row for row in sessions}
+        assert rows["websocket:beta"]["workspace_scope"]["project_path"] == str(
+            project.resolve()
+        )
+        assert rows["websocket:beta"]["workspace_scope"]["access_mode"] == "restricted"
+        assert all(not any(key.startswith("_") for key in row) for row in sessions)
     finally:
         await channel.stop()
         await server_task
@@ -2257,6 +2287,7 @@ async def test_webui_sidebar_state_routes_are_config_dir_scoped(
         payload = {
             "pinned_keys": ["websocket:sidebar"],
             "archived_keys": ["websocket:old"],
+            "session_order": ["websocket:old", "websocket:sidebar"],
             "title_overrides": {"websocket:sidebar": "Pinned work"},
             "view": {"density": "compact", "show_archived": True},
         }
@@ -2268,6 +2299,7 @@ async def test_webui_sidebar_state_routes_are_config_dir_scoped(
         assert updated.status_code == 200
         body = updated.json()
         assert body["pinned_keys"] == ["websocket:sidebar"]
+        assert body["session_order"] == ["websocket:old", "websocket:sidebar"]
         assert body["title_overrides"] == {"websocket:sidebar": "Pinned work"}
         assert body["view"]["density"] == "compact"
 
@@ -2594,6 +2626,7 @@ async def test_webui_automations_route_manages_local_triggers(
         by_id = {job["id"]: job for job in listed.json()["jobs"]}
         assert by_id[trigger.id]["kind"] == "local_trigger"
         assert by_id[trigger.id]["state"]["pending"] is True
+        assert by_id[trigger.id]["payload"]["message"] == "Review queued PR"
         assert by_id[trigger.id]["trigger"]["command"] == f'nanobot trigger {trigger.id} "message"'
 
         disabled = await _http_get(
@@ -2821,7 +2854,7 @@ async def test_session_delete_blocks_origin_automation_when_unified_enabled(
 
 
 @pytest.mark.asyncio
-async def test_session_routes_accept_percent_encoded_websocket_keys(
+async def test_session_delete_accepts_percent_encoded_websocket_keys(
     bus: MagicMock, tmp_path: Path
 ) -> None:
     sm = _seed_session(tmp_path, key="websocket:encoded-key")
@@ -2830,13 +2863,6 @@ async def test_session_routes_accept_percent_encoded_websocket_keys(
     try:
         token = channel.gateway.tokens.issue_api_token(300)
         auth = {"Authorization": f"Bearer {token}"}
-
-        msgs = await _http_get(
-            "http://127.0.0.1:29910/api/sessions/websocket%3Aencoded-key/messages",
-            headers=auth,
-        )
-        assert msgs.status_code == 200
-        assert msgs.json()["key"] == "websocket:encoded-key"
 
         path = sm._get_session_path("websocket:encoded-key")
         assert path.exists()
@@ -2847,41 +2873,6 @@ async def test_session_routes_accept_percent_encoded_websocket_keys(
         assert deleted.status_code == 200
         assert deleted.json()["deleted"] is True
         assert not path.exists()
-    finally:
-        await channel.stop()
-        await server_task
-
-
-@pytest.mark.asyncio
-async def test_session_messages_hide_persisted_runtime_context(
-    bus: MagicMock, tmp_path: Path
-) -> None:
-    sm = SessionManager(tmp_path)
-    session = sm.get_or_create("websocket:runtime-context")
-    content, marker = append_runtime_context(
-        "visible user text",
-        [RuntimeContextBlock(source="goal", content="private goal context")],
-    )
-    session.add_message(
-        "user",
-        content,
-        **{RUNTIME_CONTEXT_HISTORY_META: marker},
-    )
-    sm.save(session)
-    channel = _ch(bus, session_manager=sm, port=29919)
-    server_task = asyncio.create_task(channel.start())
-    try:
-        token = channel.gateway.tokens.issue_api_token(300)
-        response = await _http_get(
-            "http://127.0.0.1:29919/api/sessions/websocket:runtime-context/messages",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-
-        assert response.status_code == 200
-        message = response.json()["messages"][0]
-        assert message["content"] == "visible user text"
-        assert RUNTIME_CONTEXT_HISTORY_META not in message
-        assert "private goal context" not in response.text
     finally:
         await channel.stop()
         await server_task
@@ -2957,7 +2948,140 @@ async def test_webui_thread_resigns_assistant_media_urls(
 
 
 @pytest.mark.asyncio
-async def test_session_routes_reject_non_websocket_keys(
+async def test_sessions_list_negotiates_gzip_across_repeated_headers(
+    bus: MagicMock, tmp_path: Path
+) -> None:
+    sm = _seed_many(tmp_path, [f"websocket:gzip-{index:03d}" for index in range(80)])
+    port = _free_port()
+    channel = _ch(bus, session_manager=sm, workspace_path=tmp_path, port=port)
+    server_task = asyncio.create_task(channel.start())
+    try:
+        token = channel.gateway.tokens.issue_api_token(300)
+        response = await _http_get(
+            f"http://127.0.0.1:{port}/api/sessions",
+            headers=[
+                ("Authorization", f"Bearer {token}"),
+                ("Accept-Encoding", "identity;q=0"),
+                ("Accept-Encoding", "gzip"),
+            ],
+        )
+
+        assert response.status_code == 200
+        assert response.headers["Content-Encoding"] == "gzip"
+        assert response.headers["Vary"] == "Accept-Encoding"
+        assert len(response.json()["sessions"]) == 80
+    finally:
+        await channel.stop()
+        await server_task
+
+
+@pytest.mark.asyncio
+async def test_webui_thread_complete_transcript_skips_session_history_read(
+    bus: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nanobot.webui.transcript import append_transcript_object
+
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    key = "websocket:fast-thread"
+    sm = _seed_session(tmp_path, key=key)
+    for event in (
+        {"event": "user", "chat_id": "fast-thread", "text": "hi"},
+        {"event": "message", "chat_id": "fast-thread", "text": "hello back"},
+        {"event": "turn_end", "chat_id": "fast-thread"},
+    ):
+        append_transcript_object(key, event)
+
+    read_session_file = MagicMock(
+        side_effect=AssertionError("complete transcripts must not read canonical history")
+    )
+    monkeypatch.setattr(sm, "read_session_file", read_session_file)
+    port = _free_port()
+    channel = _ch(
+        bus,
+        session_manager=sm,
+        workspace_path=tmp_path,
+        port=port,
+    )
+    server_task = asyncio.create_task(channel.start())
+    try:
+        token = channel.gateway.tokens.issue_api_token(300)
+        response = await _http_get(
+            f"http://127.0.0.1:{port}/api/sessions/"
+            "websocket%3Afast-thread/webui-thread?limit=160&direction=latest",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert [message["content"] for message in response.json()["messages"]] == [
+            "hi",
+            "hello back",
+        ]
+        read_session_file.assert_not_called()
+    finally:
+        await channel.stop()
+        await server_task
+
+
+@pytest.mark.asyncio
+async def test_webui_thread_negotiates_gzip_for_large_payloads(
+    bus: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nanobot.webui.transcript import append_transcript_object
+
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    sm = SessionManager(tmp_path)
+    append_transcript_object(
+        "websocket:gzip-thread",
+        {
+            "event": "user",
+            "chat_id": "gzip-thread",
+            "text": "compress me " * 1_000,
+        },
+    )
+    port = _free_port()
+    channel = _ch(bus, session_manager=sm, workspace_path=tmp_path, port=port)
+    server_task = asyncio.create_task(channel.start())
+    try:
+        token = channel.gateway.tokens.issue_api_token(300)
+        url = (
+            f"http://127.0.0.1:{port}/api/sessions/"
+            "websocket%3Agzip-thread/webui-thread?limit=80&direction=latest"
+        )
+        compressed = await _http_get(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept-Encoding": "br, gzip",
+            },
+        )
+
+        assert compressed.status_code == 200
+        assert compressed.headers["Content-Encoding"] == "gzip"
+        assert compressed.headers["Vary"] == "Accept-Encoding"
+        assert int(compressed.headers["Content-Length"]) < len(compressed.content)
+        assert compressed.json()["messages"][0]["content"].startswith("compress me")
+
+        identity = await _http_get(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept-Encoding": "gzip;q=0, br",
+            },
+        )
+        assert identity.status_code == 200
+        assert "Content-Encoding" not in identity.headers
+        assert identity.json() == compressed.json()
+
+        unauthorized = await _http_get(url, headers={"Accept-Encoding": "gzip"})
+        assert unauthorized.status_code == 401
+        assert "Content-Encoding" not in unauthorized.headers
+    finally:
+        await channel.stop()
+        await server_task
+
+
+@pytest.mark.asyncio
+async def test_session_delete_rejects_non_websocket_keys(
     bus: MagicMock, tmp_path: Path
 ) -> None:
     sm = _seed_many(
@@ -2974,14 +3098,6 @@ async def test_session_routes_reject_non_websocket_keys(
         token = channel.gateway.tokens.issue_api_token(300)
         auth = {"Authorization": f"Bearer {token}"}
 
-        # The webui list already hides non-websocket sessions; handcrafted URLs
-        # should hit the same boundary rather than exposing or deleting them.
-        msgs = await _http_get(
-            "http://127.0.0.1:29909/api/sessions/cli:direct/messages",
-            headers=auth,
-        )
-        assert msgs.status_code == 404
-
         doomed = sm._get_session_path("slack:C123")
         assert doomed.exists()
         deny_delete = await _http_get(
@@ -2996,7 +3112,7 @@ async def test_session_routes_reject_non_websocket_keys(
 
 
 @pytest.mark.asyncio
-async def test_session_routes_reject_invalid_key(
+async def test_session_delete_rejects_invalid_key(
     bus: MagicMock, tmp_path: Path
 ) -> None:
     sm = _seed_session(tmp_path)
@@ -3009,7 +3125,7 @@ async def test_session_routes_reject_invalid_key(
         # Invalid characters in the key -> regex match fails -> 404
         # (route doesn't match, falls through to channel 404).
         resp = await _http_get(
-            "http://127.0.0.1:29904/api/sessions/bad%20key/messages",
+            "http://127.0.0.1:29904/api/sessions/bad%20key/delete",
             headers=auth,
         )
         assert resp.status_code in {400, 404}
@@ -3164,6 +3280,168 @@ def test_local_browser_request_requires_loopback_host_and_forwarded_origin() -> 
     )
 
 
+def _trusted_proxy_config(
+    cidrs: list[str] | None = None,
+    *,
+    assertion_header: str = "Cf-Access-Jwt-Assertion",
+) -> dict[str, Any]:
+    return {
+        "trustedProxyAuth": {
+            "trustedPeerCidrs": cidrs or ["127.0.0.1/32"],
+            "assertionHeader": assertion_header,
+        }
+    }
+
+
+def test_trusted_proxy_requires_non_empty_assertion(bus: MagicMock) -> None:
+    channel = _ch(bus, **_trusted_proxy_config())
+    for assertion in (None, "", "   "):
+        headers = {"Cf-Access-Jwt-Assertion": assertion} if assertion is not None else {}
+        resp = channel.gateway.http._handle_bootstrap(_LOCAL, _FakeReq(headers))
+        assert resp.status_code == 403
+
+
+def test_trusted_proxy_rejects_untrusted_peer_spoof(bus: MagicMock) -> None:
+    channel = _ch(bus, **_trusted_proxy_config())
+    resp = channel.gateway.http._handle_bootstrap(
+        _REMOTE,
+        _FakeReq({"Cf-Access-Jwt-Assertion": "spoofed"}),
+    )
+    assert resp.status_code == 403
+
+
+def test_trusted_proxy_bootstrap_has_no_tokens(
+    bus: MagicMock,
+) -> None:
+    assertion = "opaque-upstream-assertion"
+    channel = _ch(bus, **_trusted_proxy_config())
+    log = MagicMock()
+    channel.gateway.http._log = log
+    resp = channel.gateway.http._handle_bootstrap(
+        _LOCAL,
+        _FakeReq(
+            {
+                "Host": "nanobot.example",
+                "X-Forwarded-For": "203.0.113.42",
+                "Forwarded": "for=203.0.113.42;host=nanobot.example",
+                "X-Real-IP": "203.0.113.42",
+                "X-Forwarded-Host": "nanobot.example",
+                "Cf-Access-Jwt-Assertion": assertion,
+            }
+        ),
+    )
+    assert resp.status_code == 200
+    body = resp.body.decode()
+    assert assertion not in body
+    assert assertion not in repr(log.mock_calls)
+    payload = json.loads(body)
+    assert "token" not in payload
+    assert "api_token" not in payload
+    assert payload["ws_path"] == "/"
+
+
+@pytest.mark.asyncio
+async def test_trusted_proxy_authorizes_rest_without_api_token(bus: MagicMock) -> None:
+    channel = _ch(bus, **_trusted_proxy_config())
+    response = await channel.gateway.http.dispatch(
+        _LOCAL,
+        _FakeReq(
+            {
+                "Host": "nanobot.example",
+                "Cf-Access-Jwt-Assertion": "present",
+            },
+            path="/api/sessions",
+        ),
+    )
+    assert response.status_code == 503
+
+
+def test_trusted_proxy_authorizes_websocket_without_token(bus: MagicMock) -> None:
+    channel = _ch(bus, **_trusted_proxy_config())
+    response = channel._authorize_websocket_handshake(
+        _LOCAL,
+        {},
+        {"Cf-Access-Jwt-Assertion": "present"},
+    )
+    assert response is None
+    assert _LOCAL in channel._webui_connections
+
+
+def test_forwarding_headers_alone_never_authorize_bootstrap(bus: MagicMock) -> None:
+    channel = _ch(bus)
+    resp = channel.gateway.http._handle_bootstrap(
+        _REMOTE,
+        _FakeReq(
+            {
+                "Host": "nanobot.example",
+                "X-Forwarded-For": "127.0.0.1",
+                "Forwarded": "for=127.0.0.1",
+                "X-Real-IP": "127.0.0.1",
+            }
+        ),
+    )
+    assert resp.status_code == 403
+
+
+def test_trusted_proxy_bypasses_bootstrap_secret_and_tokens(bus: MagicMock) -> None:
+    channel = _ch(
+        bus,
+        tokenIssueSecret="route-secret",
+        **_trusted_proxy_config(),
+    )
+    resp = channel.gateway.http._handle_bootstrap(
+        _LOCAL,
+        _FakeReq({"Cf-Access-Jwt-Assertion": "present"}),
+    )
+    assert resp.status_code == 200
+    payload = json.loads(resp.body)
+    assert "token" not in payload
+    assert "api_token" not in payload
+
+
+@pytest.mark.parametrize(
+    ("peer", "cidr"),
+    [
+        ("127.0.0.1", "127.0.0.1/32"),
+        ("::1", "::1/128"),
+        ("::ffff:127.0.0.1", "127.0.0.0/24"),
+        ("127.0.0.1", "::ffff:127.0.0.0/120"),
+    ],
+)
+def test_trusted_proxy_matches_ip_versions_and_mapped_peers(
+    bus: MagicMock,
+    peer: str,
+    cidr: str,
+) -> None:
+    from nanobot.webui.http_utils import is_trusted_proxy_authenticated_request
+
+    config = WebSocketConfig.model_validate(_trusted_proxy_config([cidr]))
+    request = _FakeReq({"Cf-Access-Jwt-Assertion": "present"})
+    assert is_trusted_proxy_authenticated_request(_FakeConn((peer, 12345)), request.headers, config)
+
+
+@pytest.mark.parametrize(
+    "cidr",
+    ["not-a-cidr", "0.0.0.0/0", "::/0", "::/1", "::ffff:0:0/96"],
+)
+def test_trusted_proxy_rejects_invalid_or_universal_cidrs(
+    cidr: str,
+) -> None:
+    from pydantic_core import ValidationError
+
+    with pytest.raises(ValidationError):
+        WebSocketConfig.model_validate(_trusted_proxy_config([cidr]))
+
+@pytest.mark.parametrize(
+    "assertion_header",
+    ["Host", "Forwarded", "X-Forwarded-For", "X-Real-IP", "CF-Connecting-IP"],
+)
+def test_trusted_proxy_rejects_routing_headers(assertion_header: str) -> None:
+    from pydantic_core import ValidationError
+
+    with pytest.raises(ValidationError, match="proxy-generated"):
+        WebSocketConfig.model_validate(_trusted_proxy_config(assertion_header=assertion_header))
+
 def test_wildcard_host_without_auth_raises_on_startup(bus: MagicMock) -> None:
     import pytest
     from pydantic_core import ValidationError
@@ -3179,6 +3457,11 @@ def test_wildcard_host_with_token_is_valid(bus: MagicMock) -> None:
 
 def test_wildcard_host_with_secret_is_valid(bus: MagicMock) -> None:
     channel = _ch(bus, host="0.0.0.0", tokenIssueSecret="s3cret")
+    assert channel.config.host == "0.0.0.0"
+
+
+def test_wildcard_host_with_trusted_proxy_auth_is_valid(bus: MagicMock) -> None:
+    channel = _ch(bus, host="0.0.0.0", **_trusted_proxy_config())
     assert channel.config.host == "0.0.0.0"
 
 
@@ -3226,6 +3509,40 @@ def test_bootstrap_ws_url_uses_forwarded_https_host(bus: MagicMock) -> None:
     assert resp.status_code == 200
     body = json.loads(resp.body)
     assert body["ws_url"] == "wss://nanobot.example/"
+
+
+def test_bootstrap_ws_url_uses_configured_public_url(bus: MagicMock) -> None:
+    channel = _ch(
+        bus,
+        host="127.0.0.1",
+        port=29931,
+        tokenIssueSecret="s3cret",
+        publicWsUrl="wss://claw.wasapi.xyz/",
+    )
+    resp = channel.gateway.http._handle_bootstrap(
+        _LOCAL,
+        _FakeReq(
+            {
+                "Authorization": "Bearer s3cret",
+                "Host": "127.0.0.1:29931",
+                "X-Forwarded-Proto": "https",
+            }
+        ),
+    )
+    assert resp.status_code == 200
+    assert json.loads(resp.body)["ws_url"] == "wss://claw.wasapi.xyz/"
+
+
+def test_public_ws_url_must_match_configured_path() -> None:
+    from pydantic_core import ValidationError
+
+    with pytest.raises(ValidationError, match="public_ws_url path must match path"):
+        WebSocketConfig.model_validate(
+            {
+                "path": "/socket",
+                "publicWsUrl": "wss://claw.wasapi.xyz/",
+            }
+        )
 
 
 def test_bootstrap_without_auth_rejects_remote_requests(bus: MagicMock) -> None:

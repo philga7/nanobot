@@ -627,9 +627,13 @@ export async function pollChannelConnect(
   channel: string,
   sessionId: string,
   base: string = "",
+  params: Readonly<Record<string, string>> = {},
 ): Promise<ChannelConnectPayload> {
   const query = new URLSearchParams();
   query.set("session_id", sessionId);
+  Object.entries(params).forEach(([key, value]) => {
+    if (key !== "session_id") query.set(key, value);
+  });
   return request<ChannelConnectPayload>(
     `${base}/api/settings/channels/${channel}/connect/poll?${query}`,
     token,
@@ -858,8 +862,6 @@ export async function updateSettings(
     query.set("context_window_tokens", String(update.contextWindowTokens));
   }
   if (update.timezone !== undefined) query.set("timezone", update.timezone);
-  if (update.botName !== undefined) query.set("bot_name", update.botName);
-  if (update.botIcon !== undefined) query.set("bot_icon", update.botIcon);
   if (update.toolHintMaxLength !== undefined) {
     query.set("tool_hint_max_length", String(update.toolHintMaxLength));
   }

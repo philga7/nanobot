@@ -86,6 +86,26 @@ def test_settings_payload_includes_versioned_docs(
     }
 
 
+def test_settings_payload_exposes_edenai_provider(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.providers.edenai.api_key = "eden-test-key"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = settings_payload()
+    edenai = next(row for row in payload["providers"] if row["name"] == "edenai")
+
+    assert edenai["label"] == "Eden AI"
+    assert edenai["configured"] is True
+    assert edenai["default_api_base"] == "https://api.edenai.run/v3"
+    assert edenai["model_catalog"] == "catalog"
+    assert edenai["model_selectable"] is True
+
+
 def test_settings_payload_includes_relocated_capabilities(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -713,15 +733,19 @@ def test_update_provider_settings_updates_and_clears_oauth_proxy(
         },
     )
 
-    payload = update_provider_settings(
-        {"provider": [provider_name], "proxy": [" http://127.0.0.1:7890 "]}
-    )
+    payload = update_provider_settings({
+        "provider": [provider_name],
+        "proxy": [" http://127.0.0.1:7890 "],
+        "extraBody": [json.dumps({"tools": []})],
+    })
 
     providers = {row["name"]: row for row in payload["providers"]}
     assert providers[provider_name]["proxy"] == "http://127.0.0.1:7890"
     assert getattr(load_config(config_path).providers, config_attr).proxy == (
         "http://127.0.0.1:7890"
     )
+    assert providers[provider_name]["extra_body"] == {"tools": []}
+    assert getattr(load_config(config_path).providers, config_attr).extra_body == {"tools": []}
 
     cleared = update_provider_settings({"provider": [provider_name], "proxy": ["  "]})
 
@@ -756,6 +780,26 @@ def test_update_agent_settings_accepts_context_window_options(
     assert payload["agent"]["context_window_tokens"] == 200000
     saved = load_config(config_path)
     assert saved.agents.defaults.context_window_tokens == 200000
+
+
+def test_update_agent_settings_marks_timezone_as_manual(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "nanobot.config.timezone.get_localzone_name",
+        lambda: "Asia/Shanghai",
+    )
+    config_path = tmp_path / "config.json"
+    save_config(Config(), config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = update_agent_settings({"timezone": ["Asia/Shanghai"]})
+
+    assert payload["requires_restart"] is False
+    saved = load_config(config_path)
+    assert saved.agents.defaults.timezone == "Asia/Shanghai"
+    assert saved.agents.defaults.timezone_mode == "manual"
 
 
 def test_update_model_configuration_preserves_custom_context_windows(
@@ -1580,7 +1624,10 @@ def test_openai_codex_oauth_login_reports_missing_oauth_cli_kit(
     with pytest.raises(WebUISettingsError) as exc:
         login_oauth_provider({"provider": ["openai-codex"]})
 
-    assert "oauth_cli_kit not installed. Run: pip install oauth-cli-kit" in str(exc.value)
+    assert str(exc.value) == (
+        "This nanobot installation is missing the required oauth-cli-kit package. "
+        "Reinstall or upgrade nanobot-ai using the same installation method."
+    )
 
 
 def test_github_copilot_oauth_login_reports_missing_oauth_cli_kit(
@@ -1598,7 +1645,10 @@ def test_github_copilot_oauth_login_reports_missing_oauth_cli_kit(
     with pytest.raises(WebUISettingsError) as exc:
         login_oauth_provider({"provider": ["github-copilot"]})
 
-    assert "oauth_cli_kit not installed. Run: pip install oauth-cli-kit" in str(exc.value)
+    assert str(exc.value) == (
+        "This nanobot installation is missing the required oauth-cli-kit package. "
+        "Reinstall or upgrade nanobot-ai using the same installation method."
+    )
 
 
 def test_xai_grok_login_starts_fresh_browser_flow_with_proxy(

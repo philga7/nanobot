@@ -413,13 +413,11 @@ describe("webui API helpers", () => {
       provider: "openrouter",
       contextWindowTokens: 262144,
       timezone: "Asia/Shanghai",
-      botName: "nanobot",
-      botIcon: "nb",
       toolHintMaxLength: 120,
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/update?model_preset=default&model=openrouter%2Ftest&provider=openrouter&context_window_tokens=262144&timezone=Asia%2FShanghai&bot_name=nanobot&bot_icon=nb&tool_hint_max_length=120",
+      "/api/settings/update?model_preset=default&model=openrouter%2Ftest&provider=openrouter&context_window_tokens=262144&timezone=Asia%2FShanghai&tool_hint_max_length=120",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),
@@ -582,7 +580,7 @@ describe("webui API helpers", () => {
     await updateProviderSettings("tok", {
       provider: "xai_grok",
       proxy: "http://127.0.0.1:7890",
-      extraBody: '{"service_tier":"priority"}',
+      extraBody: '{"tools":[]}',
     });
 
     expect(fetch).toHaveBeenCalledWith(
@@ -592,7 +590,7 @@ describe("webui API helpers", () => {
           Authorization: "Bearer tok",
           "X-Nanobot-Provider-Values": encodeURIComponent(JSON.stringify({
             proxy: "http://127.0.0.1:7890",
-            extraBody: '{"service_tier":"priority"}',
+            extraBody: '{"tools":[]}',
           })),
         },
       }),
@@ -966,6 +964,7 @@ describe("webui API helpers", () => {
       schema_version: 1,
       pinned_keys: ["websocket:chat-1"],
       archived_keys: ["websocket:old"],
+      session_order: ["websocket:chat-1", "websocket:old"],
       title_overrides: { "websocket:chat-1": "Release" },
       project_name_overrides: { "/Users/me/nanobot": "Core" },
       tags_by_key: {},
