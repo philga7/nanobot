@@ -37,6 +37,7 @@ from nanobot.agent.tools.exec_session import ExecSessionManager
 from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.runtime_control import AgentRuntimeControl
 from nanobot.agent.tools.self import MyTool
 from nanobot.agent.turn_delivery import (
     TurnDelivery,
@@ -76,6 +77,7 @@ from nanobot.session.goal_state import (
 from nanobot.session.history_visibility import HIDDEN_HISTORY_META
 from nanobot.session.keys import UNIFIED_SESSION_KEY, remember_last_channel
 from nanobot.session.manager import (
+    SESSION_CACHE_MAX_SIZE,
     Session,
     SessionManager,
     replay_max_messages_for_context,
@@ -95,11 +97,9 @@ from nanobot.utils.runtime import (
 )
 
 if TYPE_CHECKING:
-    from nanobot.agent.tools.mcp import MCPConnection
     from nanobot.config.schema import (
         ChannelsConfig,
         Config,
-        MCPServerConfig,
         ProviderConfig,
         ToolsConfig,
     )
@@ -199,6 +199,11 @@ class AgentLoop:
         return self.tools.tool_names
 
     @property
+    def last_usage(self) -> Mapping[str, int]:
+        """Latest aggregate usage exposed through the runtime-control snapshot."""
+        return self._last_usage
+
+    @property
     def provider(self) -> LLMProvider:
         """Provider selected for future turn admissions."""
         return self.runtime_resolver.runtime.provider
@@ -266,7 +271,7 @@ class AgentLoop:
         cron_service: CronService | None = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
-        mcp_servers: dict[str, MCPServerConfig] | None = None,
+        tool_registry: ToolRegistry | None = None,
         channels_config: ChannelsConfig | None = None,
         instance_name: str | None = None,
         search_backend: str = "brave",
@@ -384,11 +389,15 @@ class AgentLoop:
             disabled_skills=disabled_skills,
         )
         self.sessions = session_manager or SessionManager(workspace)
-        self.sessions.set_file_cap_archiver(self.context.memory.raw_archive)
-        self.tools = ToolRegistry()
         # One file-read/write tracker per logical session. The tool registry is
         # shared by this loop, so tools resolve the active state via contextvars.
-        self._file_state_store = FileStateStore()
+        self._file_state_store = FileStateStore(max_sessions=SESSION_CACHE_MAX_SIZE)
+        # SessionManager owns every durable deletion entrypoint, including the
+        # WebUI and fork rollback paths.  Observe that boundary once instead of
+        # duplicating cleanup in each consumer.
+        self.sessions.set_delete_observer(self._file_state_store.discard)
+        self.sessions.set_file_cap_archiver(self.context.memory.raw_archive)
+        self.tools = tool_registry if tool_registry is not None else ToolRegistry()
         self._exec_session_manager = ExecSessionManager()
         self.runner = AgentRunner()
         self._search_backend = search_backend or "brave"
@@ -411,14 +420,11 @@ class AgentLoop:
         )
         self._unified_session = unified_session
         self._running = False
-        self._mcp_servers = mcp_servers or {}
-        self._mcp_stacks: dict[str, MCPConnection] = {}
-        self._mcp_connecting = False
         self._runtime_context_providers: list[RuntimeContextProvider] = []
         self._active_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._discarding_sessions: set[str] = set()
         self._background_tasks: set[asyncio.Task[Any]] = set()
-        self._close_mcp_lock = asyncio.Lock()
+        self._close_lock = asyncio.Lock()
         self._session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
             weakref.WeakValueDictionary()
         )
@@ -471,7 +477,6 @@ class AgentLoop:
         if model_preset:
             self.set_model_preset(model_preset, publish_update=False)
         self._register_default_tools(provider_snapshot_loader=provider_snapshot_loader)
-        self._runtime_vars: dict[str, Any] = {}
         self._current_iteration: int = 0
         self.commands = CommandRouter()
         register_builtin_commands(self.commands)
@@ -481,9 +486,14 @@ class AgentLoop:
         cls,
         config: Config,
         bus: MessageBus | None = None,
+        *,
+        tool_registry: ToolRegistry,
         **extra: Any,
     ) -> AgentLoop:
         """Create an AgentLoop from config with the common parameter set.
+
+        The tool registry is caller-owned so application composition can share
+        it with infrastructure such as an ``MCPProvider``.
 
         Extra keyword arguments are forwarded to ``AgentLoop.__init__``,
         allowing callers to override or extend the standard config-derived
@@ -494,6 +504,12 @@ class AgentLoop:
         if bus is None:
             bus = MessageBus()
         defaults = config.agents.defaults
+        if "session_manager" not in extra:
+            data_dir = config.runtime_data_dir
+            extra["session_manager"] = SessionManager(
+                config.workspace_path,
+                sessions_root=data_dir / "sessions" if data_dir is not None else None,
+            )
         provider = extra.pop("provider", None) or make_provider(config)
         resolved = config.resolve_preset()
         model = extra.pop("model", None) or resolved.model
@@ -517,7 +533,6 @@ class AgentLoop:
             provider_retry_mode=defaults.provider_retry_mode,
             tool_hint_max_length=defaults.tool_hint_max_length,
             restrict_to_workspace=config.tools.restrict_to_workspace,
-            mcp_servers=config.tools.mcp_servers,
             channels_config=config.channels,
             timezone=defaults.timezone,
             unified_session=defaults.unified_session,
@@ -533,6 +548,7 @@ class AgentLoop:
             restart_mode=config.gateway.restart_mode,
             provider_snapshot_loader=provider_snapshot_loader,
             preset_snapshot_loader=preset_snapshot_loader,
+            tool_registry=tool_registry,
             **extra,
         )
 
@@ -541,9 +557,15 @@ class AgentLoop:
         self.subagents.max_iterations = self.max_iterations
 
     def invalidate_runtime_config(self) -> None:
-        """Invalidate runtime config and notify clients to refresh its catalog."""
+        """Invalidate runtime config for lazy refresh at the next admission."""
         self.runtime_resolver.invalidate()
-        self._publish_runtime_selection(self.runtime_resolver.runtime)
+
+    def refresh_runtime_config(self) -> LLMRuntime:
+        """Refresh runtime config now and publish the canonical selection."""
+        self.runtime_resolver.invalidate()
+        runtime = self.runtime_resolver.admit()
+        self._publish_runtime_selection(runtime)
+        return runtime
 
     def runtime_for_session(
         self,
@@ -647,10 +669,13 @@ class AgentLoop:
         loader = ToolLoader()
         registered = loader.load(ctx, self.tools)
 
-        # MyTool needs runtime state reference — manual registration
+        # MyTool receives only the explicit runtime-control capability.
         if self.tools_config.my.enable:
             self.tools.register(
-                MyTool(runtime_state=self, modify_allowed=self.tools_config.my.allow_set)
+                MyTool(
+                    runtime_control=AgentRuntimeControl(self),
+                    modify_allowed=self.tools_config.my.allow_set,
+                )
             )
             registered.append("my")
 
@@ -661,10 +686,6 @@ class AgentLoop:
             registered.append("search_memory")
 
         logger.info("Registered {} tools: {}", len(registered), registered)
-
-    async def _connect_mcp(self) -> None:
-        """Connect configured MCP servers."""
-        await agent_context.connect_mcp(self, self.tools)
 
     def register_runtime_context_provider(
         self,
@@ -838,7 +859,12 @@ class AgentLoop:
             self.sessions.invalidate(key)
             await self._cancel_active_tasks(key)
         finally:
+            self.discard_session_file_state(key)
             self._discarding_sessions.discard(key)
+
+    def discard_session_file_state(self, key: str) -> None:
+        """Forget ephemeral file-read state for a reset or removed session."""
+        self._file_state_store.discard(key)
 
     def _effective_session_key(self, msg: InboundMessage) -> str:
         """Return the session key used for task routing and mid-turn injections."""
@@ -1177,7 +1203,6 @@ class AgentLoop:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         try:
-            await self._connect_mcp()
             logger.info("Agent loop started")
 
             while self._running:
@@ -1268,8 +1293,7 @@ class AgentLoop:
                 active_tasks.add(task)
                 task.add_done_callback(active_tasks.discard)
         finally:
-            # MCP stdio transports use AnyIO cancel scopes; close them from the task that opened them.
-            await self.close_mcp()
+            await self.aclose()
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message: per-session serial, cross-session concurrent."""
@@ -1387,24 +1411,24 @@ class AgentLoop:
                 await delivery.idle()
                 await self._publish_next_deferred_automation_turn(session_key)
 
-    async def close_mcp(self) -> None:
-        """Stop active work, then close exec, subagent, and MCP resources.
+    async def aclose(self) -> None:
+        """Stop active work, then close resources owned by the agent loop.
 
         Resource teardown must still run if cancellation interrupts task draining.
         Gateway shutdown deliberately bounds this coroutine, so keeping the cleanup
         phase in ``finally`` prevents a timed-out background task from leaving
         subprocess transports alive after the event loop closes.
         """
-        # The agent loop closes itself from ``run()`` while gateway shutdown also
+        # The loop closes itself from ``run()`` while application shutdown also
         # performs a guaranteed final close. Serialize those owners so they cannot
-        # tear down the same subprocess transports concurrently.
-        close_lock = getattr(self, "_close_mcp_lock", None)
+        # tear down the same resources concurrently.
+        close_lock = getattr(self, "_close_lock", None)
         if close_lock is None:
-            close_lock = self._close_mcp_lock = asyncio.Lock()
+            close_lock = self._close_lock = asyncio.Lock()
         async with close_lock:
-            await self._close_mcp_unlocked()
+            await self._aclose_unlocked()
 
-    async def _close_mcp_unlocked(self) -> None:
+    async def _aclose_unlocked(self) -> None:
         errors: list[BaseException] = []
         active_task_groups = getattr(self, "_active_tasks", {})
         active_tasks = tuple({task for tasks in active_task_groups.values() for task in tasks})
@@ -1427,7 +1451,6 @@ class AgentLoop:
         cleanup_steps = (
             self.subagents.close,
             self._exec_session_manager.close_all,
-            lambda: agent_context.close_mcp(self),
         )
         for cleanup in cleanup_steps:
             try:
@@ -1800,7 +1823,7 @@ class AgentLoop:
                 session.provider_state = None
                 self.sessions.save(session)
             ctx.input_persisted_early = True
-        ctx.delivery.record_runtime(runtime)
+        await ctx.delivery.runtime_admitted(runtime)
 
         ctx.request_context = self._request_context_for_turn(ctx)
         if ctx.kind is TurnKind.USER:
@@ -2317,7 +2340,6 @@ class AgentLoop:
         """Process an external message directly and return the outbound payload."""
         if channel == "system":
             raise ValueError("channel 'system' is reserved for internal messages")
-        await self._connect_mcp()
         metadata: dict[str, Any] = {}
         if not persist_user_message:
             metadata[turn_continuation.SKIP_USER_PERSIST_META] = True
