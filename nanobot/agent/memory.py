@@ -33,6 +33,7 @@ from nanobot.utils.helpers import (
     ensure_dir,
     estimate_message_tokens,
     estimate_prompt_tokens_chain,
+    find_legal_message_start,
     strip_think,
     truncate_text,
 )

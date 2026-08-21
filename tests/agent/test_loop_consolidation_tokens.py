@@ -210,7 +210,7 @@ async def test_consolidation_persists_summary_for_next_prepare_session(tmp_path,
 @pytest.mark.asyncio
 async def test_consolidation_forces_boundary_without_future_user_turn(tmp_path, monkeypatch) -> None:
     loop = _make_loop(tmp_path, estimated_tokens=0, context_window_tokens=200)
-    loop.consolidator.archive = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    loop.consolidator.archive_session = AsyncMock(return_value="forced summary")  # type: ignore[method-assign]
 
     session = loop.sessions.get_or_create("cli:test")
     session.messages = [
@@ -236,9 +236,10 @@ async def test_consolidation_forces_boundary_without_future_user_turn(tmp_path, 
         runtime=loop.llm_runtime(),
     )
 
-    archived_chunk = loop.consolidator.archive.await_args.args[0]
-    assert [message["content"] for message in archived_chunk] == ["u1", "a1"]
+    loop.consolidator.archive_session.assert_awaited_once()
+    assert loop.consolidator.archive_session.await_args.kwargs["archive_end"] == 2
     assert session.last_consolidated == 2
+    assert session.metadata["_last_summary"]["text"] == "forced summary"
 
 
 @pytest.mark.asyncio
