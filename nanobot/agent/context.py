@@ -122,6 +122,14 @@ class ContextBuilder:
 
         parts.append(render_template("agent/tool_contract.md"))
 
+        project_path = root.expanduser().resolve()
+        if project_path != self.workspace.expanduser().resolve():
+            parts.append(
+                "# Current Project\n\n"
+                f"Working directory: {project_path}\n"
+                "Use it as the default root for project files and relative tool paths."
+            )
+
         if include_memory:
             memory = self.memory.read_memory()
             if memory and not self._is_template_content(memory, "memory/MEMORY.md"):
@@ -133,7 +141,10 @@ class ContextBuilder:
             if active_content:
                 parts.append(f"# Active Skills\n\n{active_content}")
 
-        skills_summary = self.skills.build_skills_summary(exclude=set(active_skills))
+        skills_summary = self.skills.build_skills_summary(
+            exclude=set(active_skills),
+            workspace=root,
+        )
         if skills_summary:
             parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
 

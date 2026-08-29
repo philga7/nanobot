@@ -27,7 +27,7 @@ to the selected project. Each JSONL line contains `cursor`, `timestamp`, and `co
 - Use `fixed_strings=true` for literal timestamps or JSON fragments
 - Use `head_limit` / `offset` to page through long histories
 
-Examples (replace `<history-log-path>` with the absolute path from the system prompt):
+Examples (replace `<history-log-path>` with the path from the system prompt):
 - `grep(pattern="keyword", path="<history-log-path>", case_insensitive=true)`
 - `grep(pattern="2026-04-02 10:00", path="<history-log-path>", fixed_strings=true)`
 - `grep(pattern="keyword", path="<history-log-path>", output_mode="count", case_insensitive=true)`
