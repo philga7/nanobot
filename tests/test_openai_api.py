@@ -566,11 +566,12 @@ async def test_empty_response_retries_once_then_falls_back(aiohttp_client) -> No
 async def test_process_direct_accepts_media() -> None:
     """process_direct should forward media paths to _process_message."""
     from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
     from nanobot.bus.runtime_events import RuntimeEventPublisher
 
     loop = AgentLoop.__new__(AgentLoop)
     loop._session_locks = {}
-    loop.runtime_event_publisher = RuntimeEventPublisher()
+    loop.runtime_event_publisher = RuntimeEventPublisher(MessageBus())
 
     captured_msg = None
 
