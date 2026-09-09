@@ -15,6 +15,7 @@ from loguru import logger
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.outbound_events import (
+    ContextCompactionEvent,
     ProgressEvent,
     RetryWaitEvent,
     RuntimeModelUpdatedEvent,
@@ -829,6 +830,14 @@ class ChannelManager:
 
                 channel = self.channels.get(msg.channel)
                 if channel:
+                    # Compaction lifecycle is a structured WebUI notice. Text-only
+                    # chat channels would otherwise send "Compressing context…" /
+                    # "Context compacted." as regular messages.
+                    if (
+                        isinstance(event, ContextCompactionEvent)
+                        and not channel.supports_compaction_notices
+                    ):
+                        continue
                     # Duplicate suppression is scoped to a known source message
                     # so repeated content from separate turns is still delivered.
                     if (

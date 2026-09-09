@@ -7,6 +7,7 @@ import pytest
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.outbound_events import (
+    ContextCompactionEvent,
     ProgressEvent,
     RetryWaitEvent,
     StreamDeltaEvent,
@@ -456,3 +457,84 @@ class TestRetryWaitFiltering:
         sent = send_mock.await_args_list[0].args[0]
         assert sent.content == "final answer"
         assert sent.event is None
+
+
+class TestCompactionNoticeFiltering:
+    """Compaction lifecycle notices stay on channels that render them."""
+
+    def test_text_channels_opt_out_websocket_opts_in(self):
+        from nanobot.channels.websocket.runtime import WebSocketChannel
+
+        assert MockChannel.supports_compaction_notices is False
+        assert WebSocketChannel.supports_compaction_notices is True
+        telegram_runtime = pytest.importorskip(
+            "nanobot.channels.telegram.runtime",
+            reason="Telegram extras not installed",
+        )
+        assert telegram_runtime.TelegramChannel.supports_compaction_notices is False
+
+    @pytest.mark.asyncio
+    async def test_telegram_compaction_event_is_not_delivered(self, manager, bus):
+        telegram = manager._build_channel("telegram", MockChannel, {})
+        telegram.name = "telegram"
+        manager.channels["telegram"] = telegram
+
+        compaction = outbound_message_for_event(
+            channel="telegram",
+            chat_id="phil",
+            event=ContextCompactionEvent("compact-1", "succeeded"),
+        )
+        follow_up = OutboundMessage(
+            channel="telegram",
+            chat_id="phil",
+            content="final answer",
+        )
+        await bus.publish_outbound(compaction)
+        await bus.publish_outbound(follow_up)
+
+        task = asyncio.create_task(manager._dispatch_outbound())
+        try:
+            for _ in range(30):
+                if telegram._send_mock.await_count >= 1:
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert telegram._send_mock.await_count == 1
+        sent = telegram._send_mock.await_args_list[0].args[0]
+        assert sent.content == "final answer"
+        assert sent.event is None
+
+    @pytest.mark.asyncio
+    async def test_opted_in_channel_still_receives_compaction(self, manager, bus):
+        manager.channels["mock"].supports_compaction_notices = True
+        compaction = outbound_message_for_event(
+            channel="mock",
+            chat_id="chat1",
+            event=ContextCompactionEvent("compact-1", "started"),
+        )
+        await bus.publish_outbound(compaction)
+
+        task = asyncio.create_task(manager._dispatch_outbound())
+        try:
+            for _ in range(30):
+                if manager.channels["mock"]._send_mock.await_count >= 1:
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        send_mock = manager.channels["mock"]._send_mock
+        assert send_mock.await_count == 1
+        sent = send_mock.await_args_list[0].args[0]
+        assert sent.event == ContextCompactionEvent("compact-1", "started")
+        assert sent.content == "Compressing context…"

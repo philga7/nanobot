@@ -361,6 +361,7 @@ class WebSocketChannel(BaseChannel):
 
     name = "websocket"
     display_name = "WebSocket"
+    supports_compaction_notices = True
 
     def __init__(
         self,
