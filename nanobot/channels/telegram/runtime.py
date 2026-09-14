@@ -510,7 +510,8 @@ class TelegramChannel(BaseChannel):
 
     name = "telegram"
     display_name = "Telegram"
-    supports_compaction_notices = True
+    # Compaction still runs; skip "Compressing…" / "Context compacted." chat noise.
+    supports_compaction_notices = False
 
     # Commands registered with Telegram's command menu
     BOT_COMMANDS: list[BotCommand] = [
