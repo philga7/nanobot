@@ -830,9 +830,9 @@ class ChannelManager:
 
                 channel = self.channels.get(msg.channel)
                 if channel:
-                    # Compaction lifecycle is a structured WebUI notice. Text-only
-                    # chat channels would otherwise send "Compressing context…" /
-                    # "Context compacted." as regular messages.
+                    # Compaction lifecycle notices need a channel that can render
+                    # them (WebUI structured events, or Discord/Telegram in-place
+                    # edits). Slack and other text-only adapters stay opted out.
                     if (
                         isinstance(event, ContextCompactionEvent)
                         and not channel.supports_compaction_notices

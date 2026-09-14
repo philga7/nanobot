@@ -180,7 +180,7 @@ class ContextBuilder:
                     history_text = truncate_text_to_tokens(history_text, self._MAX_HISTORY_TOKENS)
                     parts.append("# Recent History\n\n" + history_text)
 
-        if session_summary:
+        if session_summary and session_summary["text"] != "(nothing)":
             parts.append(
                 "[Archived Context Summary]\n\n"
                 f"Previous conversation summary (last active {session_summary['last_active']}):\n"
@@ -217,10 +217,12 @@ class ContextBuilder:
             return entries
         for index in range(len(entries) - 1, -1, -1):
             entry = entries[index]
+            entry_session = entry.get("session_key")
+            # Entries may omit session_key (legacy / shared writes). Treat those as
+            # matching any session so the archived summary is not duplicated.
             if (
-                entry.get("session_key") == session_key
-                and entry.get("content") == session_summary["text"]
-            ):
+                session_key is None or entry_session in (None, session_key)
+            ) and entry.get("content") == session_summary["text"]:
                 return [*entries[:index], *entries[index + 1:]]
         return entries
 

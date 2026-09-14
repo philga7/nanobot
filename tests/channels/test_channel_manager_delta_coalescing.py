@@ -462,7 +462,7 @@ class TestRetryWaitFiltering:
 class TestCompactionNoticeFiltering:
     """Compaction lifecycle notices stay on channels that render them."""
 
-    def test_text_channels_opt_out_websocket_opts_in(self):
+    def test_channels_with_handlers_opt_in(self):
         from nanobot.channels.websocket.runtime import WebSocketChannel
 
         assert MockChannel.supports_compaction_notices is False
@@ -471,21 +471,27 @@ class TestCompactionNoticeFiltering:
             "nanobot.channels.telegram.runtime",
             reason="Telegram extras not installed",
         )
-        assert telegram_runtime.TelegramChannel.supports_compaction_notices is False
+        assert telegram_runtime.TelegramChannel.supports_compaction_notices is True
+        discord_runtime = pytest.importorskip(
+            "nanobot.channels.discord.runtime",
+            reason="Discord extras not installed",
+        )
+        assert discord_runtime.DiscordChannel.supports_compaction_notices is True
 
     @pytest.mark.asyncio
-    async def test_telegram_compaction_event_is_not_delivered(self, manager, bus):
-        telegram = manager._build_channel("telegram", MockChannel, {})
-        telegram.name = "telegram"
-        manager.channels["telegram"] = telegram
+    async def test_text_only_channel_compaction_event_is_not_delivered(self, manager, bus):
+        # Slack-like channels still dump compaction as plain text; keep them filtered.
+        slack = manager._build_channel("slack", MockChannel, {})
+        slack.name = "slack"
+        manager.channels["slack"] = slack
 
         compaction = outbound_message_for_event(
-            channel="telegram",
+            channel="slack",
             chat_id="phil",
-            event=ContextCompactionEvent("compact-1", "succeeded"),
+            event=ContextCompactionEvent(compaction_id="compact-1", phase="succeeded"),
         )
         follow_up = OutboundMessage(
-            channel="telegram",
+            channel="slack",
             chat_id="phil",
             content="final answer",
         )
@@ -495,7 +501,7 @@ class TestCompactionNoticeFiltering:
         task = asyncio.create_task(manager._dispatch_outbound())
         try:
             for _ in range(30):
-                if telegram._send_mock.await_count >= 1:
+                if slack._send_mock.await_count >= 1:
                     break
                 await asyncio.sleep(0.05)
         finally:
@@ -505,8 +511,8 @@ class TestCompactionNoticeFiltering:
             except asyncio.CancelledError:
                 pass
 
-        assert telegram._send_mock.await_count == 1
-        sent = telegram._send_mock.await_args_list[0].args[0]
+        assert slack._send_mock.await_count == 1
+        sent = slack._send_mock.await_args_list[0].args[0]
         assert sent.content == "final answer"
         assert sent.event is None
 
@@ -516,7 +522,7 @@ class TestCompactionNoticeFiltering:
         compaction = outbound_message_for_event(
             channel="mock",
             chat_id="chat1",
-            event=ContextCompactionEvent("compact-1", "started"),
+            event=ContextCompactionEvent(compaction_id="compact-1", phase="started"),
         )
         await bus.publish_outbound(compaction)
 
