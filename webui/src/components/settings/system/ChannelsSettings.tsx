@@ -19,7 +19,7 @@ type ChannelFilter = "all" | "enabled";
 export function ChannelsSettings({
   token, nanobotFeatures, loading, actionKey, chatAppsDocsUrl, showBrandLogos,
   error, requiresRestartPending, onAction, onFeaturesUpdate, onDismissStatus,
-  onRestart, isRestarting,
+  onRestart, isRestarting, onConfigureMcp,
 }: {
   token: string;
   nanobotFeatures: NanobotFeaturesPayload | null;
@@ -32,6 +32,7 @@ export function ChannelsSettings({
   onAction: ChannelFeatureAction;
   onFeaturesUpdate: (payload: NanobotFeaturesPayload) => void;
   onDismissStatus: () => void;
+  onConfigureMcp?: (name: string) => void;
   onRestart?: () => void;
   isRestarting?: boolean;
 }) {
@@ -49,13 +50,14 @@ export function ChannelsSettings({
     .filter((feature) => feature.type === "channel" && feature.settings_visible !== false)
     .sort((left, right) => Number(!left.ready) - Number(!right.ready)
       || localizedChannelDisplayName(left, t).localeCompare(localizedChannelDisplayName(right, t)));
-  const hasEnabledChannels = channels.some((feature) => feature.enabled);
+  const hasEnabledConfigurableChannels = channels.some((feature) =>
+    feature.enabled && !feature.capabilities?.includes("always_enabled"));
   const restartRequired = requiresRestartPending || Boolean(nanobotFeatures?.requires_restart);
   useLayoutEffect(() => {
     if (!nanobotFeatures || filterInitializedRef.current) return;
     filterInitializedRef.current = true;
-    setFilter(hasEnabledChannels ? "enabled" : "all");
-  }, [hasEnabledChannels, nanobotFeatures]);
+    setFilter(hasEnabledConfigurableChannels ? "enabled" : "all");
+  }, [hasEnabledConfigurableChannels, nanobotFeatures]);
   const visibleChannels = channels.filter((feature) =>
     (filter === "all" || feature.enabled)
     && `${feature.name} ${localizedChannelDisplayName(feature, t)}`.toLocaleLowerCase()
@@ -175,6 +177,7 @@ export function ChannelsSettings({
               {selectedChannel ? <ChannelSetupPanel token={token} feature={selectedChannel} actionKey={actionKey}
                 showBrandLogos={showBrandLogos}
                 onAction={onAction} onFeaturesUpdate={onFeaturesUpdate} connectRequestId={connectRequestId}
+                onConfigureMcp={onConfigureMcp}
                 onBeforeCloseChange={setBeforeChannelClose} /> : null}
             </div>
           </div>

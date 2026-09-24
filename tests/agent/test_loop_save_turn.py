@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from loguru import logger
 
+from agent.session_helpers import run_session
 from nanobot.agent.context import ContextBuilder, TranscriptInput
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.runner import AgentRunResult
@@ -52,7 +53,6 @@ from nanobot.session.summary import (
 )
 from nanobot.session.turn_continuation import (
     INTERNAL_CONTINUATION_META,
-    INTERNAL_CONTINUATION_RUN_STARTED_AT_META,
 )
 from nanobot.session.webui_turns import (
     TITLE_GENERATION_MAX_TOKENS,
@@ -121,6 +121,7 @@ def _runtime_message(content, blocks: list[RuntimeContextBlock]) -> dict:
 
 def _make_full_loop(tmp_path: Path) -> AgentLoop:
     provider = MagicMock()
+    provider.provider_name = "test"
     provider.get_default_model.return_value = "test-model"
     provider.generation = SimpleNamespace(max_tokens=4096)
     provider.chat_stream_with_retry = AsyncMock(return_value=LLMResponse(content="Test title"))
@@ -558,7 +559,6 @@ def test_save_turn_commits_summary_boundary_without_rewriting_raw_history() -> N
         "Current working-memory checkpoint."
     )
     assert [message["content"] for message in session.get_history()] == [
-        SUMMARY_CONTINUATION_TEXT,
         "",
         "full current result",
         "done",
@@ -1512,7 +1512,7 @@ async def test_internal_continuation_preserves_streaming_route_metadata(
 
     loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
 
-    await loop._dispatch(InboundMessage(
+    await run_session(loop, InboundMessage(
         channel="feishu",
         sender_id="u1",
         chat_id="c-stream",
@@ -1523,15 +1523,6 @@ async def test_internal_continuation_preserves_streaming_route_metadata(
             "origin_message_id": "root_001",
         },
     ))
-
-    assert loop.bus.outbound_size == 0
-    queued = await asyncio.wait_for(loop.bus.consume_inbound(), timeout=0.5)
-    assert queued.metadata[INTERNAL_CONTINUATION_META] is True
-    assert queued.metadata["_wants_stream"] is True
-    assert queued.metadata["message_id"] == "om_001"
-    assert queued.metadata["origin_message_id"] == "root_001"
-
-    await loop._dispatch(queued)
 
     outbound = []
     while loop.bus.outbound_size:
@@ -1548,6 +1539,8 @@ async def test_internal_continuation_preserves_streaming_route_metadata(
     assert ends[0].metadata["origin_message_id"] == "root_001"
     assert isinstance(ends[0].event.stream_id, str)
     assert streamed_markers and streamed_markers[-1].content == "done"
+    assert loop.bus.inbound_size == 0
+    assert calls == 2
 
 
 @pytest.mark.asyncio
@@ -1581,7 +1574,7 @@ async def test_websocket_internal_continuation_keeps_single_visible_run(
 
     loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
 
-    await loop._dispatch(InboundMessage(
+    await run_session(loop, InboundMessage(
         channel="websocket",
         sender_id="u1",
         chat_id="c-auto",
@@ -1593,26 +1586,15 @@ async def test_websocket_internal_continuation_keeps_single_visible_run(
     while loop.bus.outbound_size:
         first_outbound.append(await loop.bus.consume_outbound())
     first_statuses = [m.event for m in first_outbound if isinstance(m.event, GoalStatusEvent)]
-    assert [m.status for m in first_statuses] == ["running"]
-    assert not [m for m in first_outbound if isinstance(m.event, TurnEndEvent)]
+    assert [m.status for m in first_statuses] == ["running", "running", "idle"]
     started_at = first_statuses[0].started_at
-
-    queued = await asyncio.wait_for(loop.bus.consume_inbound(), timeout=0.5)
-    assert queued.metadata[INTERNAL_CONTINUATION_META] is True
-    assert queued.metadata[INTERNAL_CONTINUATION_RUN_STARTED_AT_META] == started_at
-
-    await loop._dispatch(queued)
-
-    second_outbound = []
-    while loop.bus.outbound_size:
-        second_outbound.append(await loop.bus.consume_outbound())
-    second_statuses = [m.event for m in second_outbound if isinstance(m.event, GoalStatusEvent)]
-    assert [m.status for m in second_statuses] == ["running", "idle"]
-    assert second_statuses[0].started_at == started_at
-    turn_end = [m for m in second_outbound if isinstance(m.event, TurnEndEvent)]
+    assert first_statuses[1].started_at == started_at
+    turn_end = [m for m in first_outbound if isinstance(m.event, TurnEndEvent)]
     assert len(turn_end) == 1
     assert isinstance(turn_end[0].event, TurnEndEvent)
     assert isinstance(turn_end[0].event.latency_ms, int)
+    assert loop.bus.inbound_size == 0
+    assert calls == 2
 
 
 @pytest.mark.asyncio
@@ -2124,8 +2106,8 @@ async def test_system_subagent_followup_uses_common_turn_lifecycle(tmp_path: Pat
 
     loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
 
-    logs: list[str] = []
-    sink_id = logger.add(logs.append, level="DEBUG", format="{message}")
+    records = []
+    sink_id = logger.add(lambda message: records.append(message.record), level="DEBUG")
     try:
         await loop._process_message(
             InboundMessage(
@@ -2148,9 +2130,64 @@ async def test_system_subagent_followup_uses_common_turn_lifecycle(tmp_path: Pat
         "_persist_turn",
         "_prepare_outbound",
     ]
-    logged = "".join(logs)
+    logged = "\n".join(record["message"] for record in records)
     for stage in ("restore", "compact", "command", "build", "run", "save", "respond"):
         assert f"Stage {stage} completed in" in logged
+    stage_records = [record for record in records if record["extra"].get("event") == "turn_stage"]
+    assert {record["extra"]["stage"] for record in stage_records} == {
+        "restore",
+        "compact",
+        "command",
+        "build",
+        "run",
+        "save",
+        "respond",
+    }
+    assert {record["extra"]["session_key"] for record in stage_records} == {"cli:test"}
+    assert len({record["extra"]["turn_id"] for record in stage_records}) == 1
+    completion = next(
+        record for record in records if record["extra"].get("event") == "turn_completed"
+    )
+    assert completion["extra"]["outcome"] == "stop"
+    assert completion["extra"]["duration_ms"] >= 0
+    assert completion["extra"]["provider"] == "test"
+    assert completion["extra"]["model"] == "test-model"
+    assert "response=[content hidden]" in completion["message"]
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_stage_logs_exception_and_correlation(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+
+    async def fail_restore(_ctx) -> None:
+        raise RuntimeError("restore failed")
+
+    loop._restore_turn = fail_restore  # type: ignore[method-assign]
+    records = []
+    sink_id = logger.add(lambda message: records.append(message.record), level="ERROR")
+    try:
+        with pytest.raises(RuntimeError, match="restore failed"):
+            await loop._process_message(
+                InboundMessage(
+                    channel="cli",
+                    sender_id="user",
+                    chat_id="failure",
+                    content="hello",
+                )
+            )
+    finally:
+        logger.remove(sink_id)
+
+    failure = next(
+        record
+        for record in records
+        if record["extra"].get("event") == "turn_stage"
+        and record["extra"].get("outcome") == "error"
+    )
+    assert failure["exception"] is not None
+    assert failure["extra"]["stage"] == "restore"
+    assert failure["extra"]["session_key"] == "cli:failure"
+    assert failure["extra"]["turn_id"].startswith("cli:failure:")
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ from nanobot.command import CommandContext
 from nanobot.config.schema import AgentDefaults, Config
 from nanobot.events import NO_EVENTS
 from nanobot.providers.base import LLMResponse
-from nanobot.session.summary import SUMMARY_CONTINUATION_TEXT
+from nanobot.session.keys import HEARTBEAT_SESSION_KEY
 
 
 def _make_loop(
@@ -131,6 +131,25 @@ async def _drain_background_tasks(loop: AgentLoop) -> None:
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     await asyncio.sleep(0)
+
+
+async def test_heartbeat_idle_compaction_persists_summary_without_channel_notices(tmp_path):
+    loop = _make_loop(tmp_path)
+    session = loop.sessions.get_or_create(HEARTBEAT_SESSION_KEY)
+    _add_turns(session, 2)
+    session.metadata["_compaction_route"] = {"channel": "telegram", "chat_id": "chat"}
+    session.updated_at = datetime.now() - timedelta(minutes=20)
+    loop.sessions.save(session)
+    loop.consolidator.archive_session = AsyncMock(return_value="Heartbeat summary.")
+
+    loop.auto_compact.check_expired(loop.schedule_background, loop.runtime_for_session)
+    await _drain_background_tasks(loop)
+
+    loop.consolidator.archive_session.assert_awaited_once()
+    loop.sessions.invalidate(HEARTBEAT_SESSION_KEY)
+    refreshed = loop.sessions.get_or_create(HEARTBEAT_SESSION_KEY)
+    assert refreshed.metadata["_last_summary"]["text"] == "Heartbeat summary."
+    assert loop.bus.outbound.empty()
 
 
 class TestSessionTTLConfig:
@@ -302,8 +321,7 @@ class TestAutoCompact:
         assert len(session_after.messages) == 13
         assert session_after.messages[0]["content"] == "msg user 0"
         visible = session_after.get_history(max_messages=12)
-        assert len(visible) == 1
-        assert [m["content"] for m in visible] == [SUMMARY_CONTINUATION_TEXT]
+        assert visible == []
         await loop.aclose()
 
     @pytest.mark.asyncio
@@ -322,7 +340,7 @@ class TestAutoCompact:
         session_after = loop.sessions.get_or_create("cli:test")
         assert session_after.messages[0]["content"] == "old user 0"
         visible = session_after.get_history(max_messages=len(session_after.messages))
-        assert [m["content"] for m in visible] == [SUMMARY_CONTINUATION_TEXT]
+        assert visible == []
         await loop.aclose()
 
     @pytest.mark.asyncio
@@ -344,7 +362,7 @@ class TestAutoCompact:
         assert entry["text"] == "User said hello."
         session_after = loop.sessions.get_or_create("cli:test")
         assert len(session_after.messages) == 13
-        assert len(session_after.get_history(max_messages=12)) == 1
+        assert session_after.get_history(max_messages=12) == []
         await loop.aclose()
 
     @pytest.mark.asyncio
@@ -573,7 +591,7 @@ class TestAutoCompactEdgeCases:
 
         session_after = loop.sessions.get_or_create("cli:test")
         assert len(session_after.messages) == 13
-        assert len(session_after.get_history(max_messages=12)) == 1
+        assert session_after.get_history(max_messages=12) == []
         assert loop.auto_compact._summaries["cli:test"]["text"] == "(nothing)"
         assert session_after.metadata["_last_summary"]["text"] == "(nothing)"
 
@@ -594,7 +612,7 @@ class TestAutoCompactEdgeCases:
 
         session_after = loop.sessions.get_or_create("cli:test")
         assert len(session_after.messages) == 13
-        assert len(session_after.get_history(max_messages=12)) == 1
+        assert session_after.get_history(max_messages=12) == []
 
         await loop.aclose()
 
@@ -817,7 +835,7 @@ class TestProactiveAutoCompact:
 
         session_after = loop.sessions.get_or_create("cli:test")
         assert len(session_after.messages) == 11
-        assert len(session_after.get_history(max_messages=10)) == 1
+        assert session_after.get_history(max_messages=10) == []
         assert len(archived_messages) == 10
         entry = loop.auto_compact._summaries.get("cli:test")
         assert entry is not None
@@ -1001,7 +1019,7 @@ class TestProactiveAutoCompact:
         assert _fake_compact.state["count"] == 1
         s1_after = loop.sessions.get_or_create("cli:expired_idle")
         assert len(s1_after.messages) == 13
-        assert len(s1_after.get_history(max_messages=12)) == 1
+        assert s1_after.get_history(max_messages=12) == []
         s2_after = loop.sessions.get_or_create("cli:expired_active")
         assert len(s2_after.messages) == 12  # Preserved
         s3_after = loop.sessions.get_or_create("cli:recent")
@@ -1131,7 +1149,7 @@ class TestSummaryPersistence:
         # prepare_session should recover summary from metadata
         reloaded = loop.sessions.get_or_create("cli:test")
         assert len(reloaded.messages) == 13
-        assert len(reloaded.get_history(max_messages=12)) == 1
+        assert reloaded.get_history(max_messages=12) == []
         _, summary = loop.auto_compact.prepare_session(reloaded, "cli:test")
 
         assert summary is not None
