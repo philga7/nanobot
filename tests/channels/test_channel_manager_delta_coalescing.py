@@ -527,6 +527,37 @@ class TestCompactionNoticeFiltering:
         assert sent.event is None
 
     @pytest.mark.asyncio
+    async def test_telegram_explicit_compaction_notice_is_delivered(self, manager, bus):
+        telegram = manager._build_channel("telegram", MockChannel, {})
+        telegram.name = "telegram"
+        manager.channels["telegram"] = telegram
+
+        compaction = outbound_message_for_event(
+            channel="telegram",
+            chat_id="phil",
+            event=ContextCompactionEvent(
+                compaction_id="compact-1", phase="succeeded", notify=True,
+            ),
+        )
+        await bus.publish_outbound(compaction)
+
+        task = asyncio.create_task(manager._dispatch_outbound())
+        try:
+            for _ in range(30):
+                if telegram._send_mock.await_count >= 1:
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert telegram._send_mock.await_count == 1
+        assert telegram._send_mock.await_args_list[0].args[0].event == compaction.event
+
+    @pytest.mark.asyncio
     async def test_opted_in_channel_still_receives_compaction(self, manager, bus):
         manager.channels["mock"].supports_compaction_notices = True
         compaction = outbound_message_for_event(

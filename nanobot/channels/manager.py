@@ -69,6 +69,7 @@ _BOOL_CAMEL_ALIASES: dict[str, str] = {
     "send_progress": "sendProgress",
     "send_tool_hints": "sendToolHints",
     "show_reasoning": "showReasoning",
+    "show_compaction_notices": "showCompactionNotices",
 }
 
 def _default_channel_config(name: str) -> dict[str, Any] | None:
@@ -229,6 +230,13 @@ class ChannelManager:
         )
         channel.show_reasoning = self._resolve_bool_override(
             section, "show_reasoning", self.config.channels.show_reasoning,
+        )
+        # Retain adapter-validated legacy values (QQ already owned this option).
+        notice_default = self._resolve_bool_override(
+            channel.config, "show_compaction_notices", self.config.channels.show_compaction_notices,
+        )
+        channel.show_compaction_notices = self._resolve_bool_override(
+            section, "show_compaction_notices", notice_default,
         )
         return channel
 
@@ -832,10 +840,12 @@ class ChannelManager:
                 if channel:
                     # Compaction lifecycle notices need a channel that opts in
                     # (WebUI structured events, Discord in-place edits). Telegram
-                    # and Slack stay silent so idle compaction does not ping chat.
+                    # and Slack stay silent so idle compaction does not ping chat,
+                    # unless the user asked (/compact) or enabled the notices.
                     if (
                         isinstance(event, ContextCompactionEvent)
                         and not channel.supports_compaction_notices
+                        and not (event.notify or channel.show_compaction_notices)
                     ):
                         continue
                     # Duplicate suppression is scoped to a known source message

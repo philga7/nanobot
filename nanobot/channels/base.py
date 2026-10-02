@@ -32,6 +32,7 @@ class BaseChannel(ABC):
     send_tool_hints: bool = True
     show_reasoning: bool = True
     supports_compaction_notices: bool = False
+    show_compaction_notices: bool = False
 
     def __init__(self, config: Any, bus: MessageBus):
         """
