@@ -42,6 +42,7 @@ from nanobot.utils.restart import (
 )
 
 if TYPE_CHECKING:
+    from nanobot.agent.subagent import SubagentManager
     from nanobot.cron.service import CronService
     from nanobot.session.manager import SessionManager
     from nanobot.triggers.local_store import LocalTriggerStore
@@ -112,6 +113,8 @@ class ChannelManager:
         webui_recovery_action: (
             Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None
         ) = None,
+        webui_subagent_manager: SubagentManager | None = None,
+        webui_discard_session: Callable[[str], Awaitable[None]] | None = None,
         config_path: Path | None = None,
     ):
         if config_path is None:
@@ -135,6 +138,8 @@ class ChannelManager:
         self._webui_mcp_reload = webui_mcp_reload
         self._webui_skill_state_action = webui_skill_state_action
         self._webui_recovery_action = webui_recovery_action
+        self._webui_subagent_manager = webui_subagent_manager
+        self._webui_discard_session = webui_discard_session
         self.channels: dict[str, BaseChannel] = {}
         self._channel_owners: dict[str, str] = {}
         self._channel_runtime_specs: dict[str, tuple[str, str]] = {}
@@ -212,6 +217,8 @@ class ChannelManager:
                 mcp_reload=self._webui_mcp_reload,
                 skill_state_action=self._webui_skill_state_action,
                 recovery_action=self._webui_recovery_action,
+                subagent_manager=self._webui_subagent_manager,
+                discard_session=self._webui_discard_session,
                 logger=logger,
             )
             kwargs["gateway"] = gateway

@@ -21,6 +21,7 @@ Configure git **`upstream`** to HKUDS and merge or rebase **`upstream/main`** in
 | --- | --- |
 | Core boundaries, extensions, or internal types | [`.agent/design.md`](.agent/design.md) |
 | Refactoring, fallbacks, or test selection | [`.agent/simplify.md`](.agent/simplify.md) |
+| User-facing copy, feature naming, or localization | [`.agent/copywriting.md`](.agent/copywriting.md) |
 | Path permissions, HTTP/MCP, or shell isolation | [`.agent/security.md`](.agent/security.md) |
 | Dependency setup, WebUI transport, config, Windows, prompts, or persistence | [`.agent/gotchas.md`](.agent/gotchas.md) |
 | Reusing verification evidence | [`.agent/workflow.md`](.agent/workflow.md) |

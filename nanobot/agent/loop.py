@@ -11,6 +11,7 @@ import time
 import weakref
 from collections.abc import Coroutine, Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack, nullcontext, suppress
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -77,7 +78,7 @@ from nanobot.session.automation_turns import automation_history_overrides
 from nanobot.session.goal_state import goal_state_runtime_lines, sustained_goal_active
 from nanobot.session.history_visibility import HIDDEN_HISTORY_META
 from nanobot.session.keys import UNIFIED_SESSION_KEY, remember_last_channel
-from nanobot.session.manager import SESSION_CACHE_MAX_SIZE, Session, SessionManager
+from nanobot.session.manager import SESSION_CACHE_MAX_SIZE, Session, SessionManager, SessionPolicy
 from nanobot.session.model_selection import (
     SESSION_MODEL_PRESET_METADATA_KEY,
     model_preset_from_metadata,
@@ -422,6 +423,7 @@ class AgentLoop:
             max_iterations=self.max_iterations,
             max_concurrent_subagents=max_concurrent_subagents,
             consolidator=self.consolidator,
+            session_manager=self.sessions,
         )
         self._unified_session = unified_session
         self._running = False
@@ -542,6 +544,10 @@ class AgentLoop:
     def _sync_subagent_runtime_limits(self) -> None:
         """Keep subagent runtime limits aligned with mutable loop settings."""
         self.subagents.max_iterations = self.max_iterations
+
+    def set_runtime_max_iterations(self, value: int) -> None:
+        self.max_iterations = value
+        self._sync_subagent_runtime_limits()
 
     def invalidate_runtime_config(self) -> None:
         """Invalidate runtime config for lazy refresh at the next admission."""
@@ -764,9 +770,11 @@ class AgentLoop:
             metadata=dict(ctx.msg.metadata or {}),
             attributes=dict(ctx.attributes),
             sender_id=ctx.msg.sender_id,
-            turn_id=ctx.turn_id,
+            turn_id=ctx.delivery.route.turn_id or ctx.turn_id,
             workspace=scope.project_path,
             log_content=ctx.session.policy.log_content and not ctx.ephemeral,
+            persist_session=ctx.session.policy.persist and not ctx.ephemeral,
+            can_receive_background_results=self._running,
         )
 
     async def _resolve_runtime_context_for_turn(
@@ -1032,7 +1040,7 @@ class AgentLoop:
         ephemeral = ephemeral or (session is not None and not session.policy.persist)
 
         async def _checkpoint(payload: dict[str, Any]) -> None:
-            if session is None:
+            if session is None or ephemeral:
                 return
             public_payload = dict(payload)
             private_state = public_payload.pop("provider_state", None)
@@ -1197,6 +1205,7 @@ class AgentLoop:
             chat_id="direct",
             session_key=session.key if session is not None else None,
             runtime=runtime,
+            can_receive_background_results=self._running,
         )
         active_session_key = session.key if session else request_ctx.session_key
         consolidation_session_key = active_session_key or "agent:transient"
@@ -1225,6 +1234,10 @@ class AgentLoop:
             log_content=(
                 request_ctx.log_content and not ephemeral
                 and (session is None or session.policy.log_content)
+            ),
+            persist_session=(
+                request_ctx.persist_session and not ephemeral
+                and (session is None or session.policy.persist)
             ),
         )
         effective_tools = tools if tools is not None else self.tools
@@ -1389,7 +1402,7 @@ class AgentLoop:
                     continue
                 if (
                     msg.require_existing_session
-                    and self.sessions.get_cached(effective_key) is None
+                    and self.sessions.get_existing(effective_key) is None
                 ):
                     continue
                 if msg.is_user_input:
@@ -1466,6 +1479,8 @@ class AgentLoop:
     def _enqueue_session_message(self, msg: InboundMessage) -> None:
         """Admit session work without waiting for its execution or result."""
         session_key = self._effective_session_key(msg)
+        if not self.subagents.accepts_result(msg, session_key):
+            return
         if session_key != msg.session_key:
             msg = dataclasses.replace(msg, session_key_override=session_key)
 
@@ -1719,6 +1734,7 @@ class AgentLoop:
         cleanup_steps = (
             self.subagents.close,
             self._exec_session_manager.close_all,
+            self.runtime_resolver.aclose,
         )
         for cleanup in cleanup_steps:
             try:
@@ -1769,6 +1785,7 @@ class AgentLoop:
         delivery: TurnDelivery | None = None,
         on_runtime_admitted: Callable[[LLMRuntime], Awaitable[None]] | None = None,
         attributes: Mapping[str, Any] | None = None,
+        session: Session | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         kind = TurnKind.USER if msg.is_user_input else TurnKind.SYSTEM
@@ -1779,6 +1796,8 @@ class AgentLoop:
             key = session_key or msg.session_key_override or f"{destination[0]}:{destination[1]}"
         else:
             key = session_key or msg.session_key
+        if not self.subagents.accepts_result(msg, key):
+            return None
         if delivery is None:
             delivery = self.turn_delivery_factory.create(msg, key)
         elif delivery.session_key != key:
@@ -1786,7 +1805,7 @@ class AgentLoop:
         t0 = time.time()
         ctx = TurnContext(
             msg=msg,
-            session=None,
+            session=session,
             session_key=key,
             turn_id=f"{key}:{time.time_ns()}",
             runtime=runtime,
@@ -1970,7 +1989,7 @@ class AgentLoop:
 
         if ctx.session is None:
             if msg.require_existing_session:
-                ctx.session = self.sessions.get_cached(ctx.session_key)
+                ctx.session = self.sessions.get_existing(ctx.session_key)
                 if ctx.session is None:
                     raise RuntimeError("required session is not active")
             else:
@@ -1989,7 +2008,7 @@ class AgentLoop:
 
         if ctx.kind is TurnKind.SYSTEM:
             logger.info("Processing system message from {}", msg.sender_id)
-        elif session.policy.log_content:
+        elif session.policy.log_content and not ctx.ephemeral:
             preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
             logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
         else:
@@ -2054,7 +2073,7 @@ class AgentLoop:
         if result is not None:
             ctx.outbound = result
             # Shortcut commands skip BUILD and SAVE, so we must persist the
-            # turn here so WebUI history hydration after _turn_end sees the
+            # turn here so WebUI history hydration after turn_end sees the
             # message.  Mark messages with _command so get_history can filter
             # them out of LLM context.  /new is excluded because it
             # intentionally clears the session.
@@ -2228,7 +2247,6 @@ class AgentLoop:
 
     async def _persist_turn(self, ctx: TurnContext) -> None:
         session = ctx.require_session()
-        turn_continuation.prepare_save_boundary(ctx)
 
         if (
             ctx.kind is TurnKind.USER
@@ -2247,6 +2265,8 @@ class AgentLoop:
             else ctx.turn_wall_started_at
         )
         ctx.turn_latency_ms = max(0, int((time.time() - latency_started_at) * 1000))
+        ctx.delivery.record_latency(ctx.turn_latency_ms)
+        turn_continuation.prepare_save_boundary(ctx)
         if ctx.usage is not None and not ctx.ephemeral:
             session.metadata["_last_usage"] = ctx.usage.to_dict()
         self._save_turn(
@@ -2263,7 +2283,6 @@ class AgentLoop:
             # The next request must rebuild from the portable checkpoint;
             # the opaque continuation predates that transcript rewrite.
             session.provider_state = None
-        ctx.delivery.record_latency(ctx.turn_latency_ms)
         self._clear_pending_user_turn(session)
         self._clear_runtime_checkpoint(session)
         self.sessions.save(session)
@@ -2550,8 +2569,13 @@ class AgentLoop:
         runtime: LLMRuntime | None = None,
         on_runtime_admitted: Callable[[LLMRuntime], Awaitable[None]] | None = None,
         attributes: Mapping[str, Any] | None = None,
+        _session_policy: SessionPolicy | None = None,
     ) -> OutboundMessage | None:
-        """Process an external message directly and return the outbound payload."""
+        """Process an external message directly and return the outbound payload.
+
+        ``ephemeral`` skips Memory journaling and extra hooks. SDK temporary
+        turns also supply a non-persistent policy for a detached session.
+        """
         if channel == "system":
             raise ValueError("channel 'system' is reserved for internal messages")
         metadata: dict[str, Any] = {}
@@ -2572,6 +2596,16 @@ class AgentLoop:
                     "on_stream_end": on_stream_end,
                     "ephemeral": ephemeral,
                 }
+                if _session_policy is not None:
+                    # Isolate per-run state before any early save or checkpoint;
+                    # the cached conversation must survive a temporary SDK turn.
+                    session = deepcopy(self.sessions.get_or_create(session_key))
+                    session.policy = SessionPolicy(
+                        persist=session.policy.persist and _session_policy.persist,
+                        log_content=session.policy.log_content and _session_policy.log_content,
+                        disabled_tools=session.policy.disabled_tools | _session_policy.disabled_tools,
+                    )
+                    kwargs["session"] = session
                 if _run_extra_hooks_for_ephemeral:
                     kwargs["run_extra_hooks_for_ephemeral"] = True
                 if hooks is not None:

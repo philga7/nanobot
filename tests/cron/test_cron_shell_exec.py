@@ -51,6 +51,7 @@ def test_add_job_shell_exec_strips_delivery_fields(tmp_path) -> None:
         "kind": "shell_exec",
         "message": "bash /tmp/x.sh",
         "deliver": False,
+        "binding_version": 0,
     }
 
 
